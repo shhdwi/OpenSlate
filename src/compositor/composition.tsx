@@ -56,8 +56,12 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   const t_ms = (frame / fps) * 1000;
 
   const zoomEnvelopes = React.useMemo(
-    () => resolveZoomEnvelopes(events, profile.auto_zoom),
-    [events, profile.auto_zoom],
+    () =>
+      resolveZoomEnvelopes(events, profile.auto_zoom, {
+        viewport_width: manifest.viewport.width,
+        viewport_height: manifest.viewport.height,
+      }),
+    [events, profile.auto_zoom, manifest.viewport.width, manifest.viewport.height],
   );
 
   const cursorTrajectory = React.useMemo(
@@ -72,62 +76,87 @@ export const PolishComposition: React.FC<CompositionProps> = ({
 
   const zoom = zoomStateAt(t_ms, zoomEnvelopes, profile.auto_zoom);
 
-  // principle 2 (easings): apply named eases on top of raw zoom progress.
-  let easedScale = 1;
+  // ── Camera transform via Recordly's progress-blended formulation. ─────
+  // With transform-origin at TOP-LEFT (0 0), the camera transform is:
+  //   scale = 1 + (peak − 1) * progress
+  //   translate = (0.5 − fx*peak) * 100% * progress  (and same for y)
+  // At progress=0 this is identity (recording covers scene exactly).
+  // At progress=1 the focal lands at scene center.
+  // The focal-clamp upstream guarantees fx ∈ [1/(2*peak), 1 − 1/(2*peak)],
+  // which makes this formula coverage-safe at every intermediate progress
+  // — no black bars during the in/out animation.
+  //
+  // (Center-origin transforms decouple scale and translate during
+  // intermediate scales, producing visible gaps. Don't go back to that.)
+  let progress = 0;
   if (zoom.active && zoom.envelope) {
-    const peak_scale = zoom.envelope.scale;
-    if (t_ms < zoom.envelope.peak_ms) {
-      easedScale = 1 + (peak_scale - 1) * applyEase(profile.auto_zoom.ease_in, zoom.in_progress);
-    } else if (t_ms >= zoom.envelope.end_ms) {
-      easedScale = 1;
-    } else if (t_ms >= zoom.envelope.peak_ms + profile.auto_zoom.hold_after_ms) {
-      easedScale =
-        peak_scale - (peak_scale - 1) * applyEase(profile.auto_zoom.ease_out, zoom.out_progress);
+    const env = zoom.envelope;
+    const last_sub_t = env.sub_clicks[env.sub_clicks.length - 1]?.t_ms ?? env.peak_ms;
+    const out_start = last_sub_t + profile.auto_zoom.hold_after_ms;
+    if (t_ms < env.peak_ms) {
+      progress = applyEase(profile.auto_zoom.ease_in, zoom.in_progress);
+    } else if (t_ms < out_start) {
+      progress = 1;
+    } else if (t_ms < env.end_ms) {
+      progress = 1 - applyEase(profile.auto_zoom.ease_out, zoom.out_progress);
     } else {
-      easedScale = peak_scale;
+      progress = 0;
     }
   }
 
-  // principle 9 (secondary animation): bg drifts opposite to zoom focal motion.
-  const bgParallaxX = zoom.active
-    ? -((zoom.envelope?.focal_x ?? width / 2) - width / 2) *
-      profile.background.parallax_factor *
-      (easedScale - 1)
+  const peakScale = profile.auto_zoom.scale;
+  const easedScale = 1 + (peakScale - 1) * progress;
+
+  const viewport_w = manifest.viewport.width;
+  const viewport_h = manifest.viewport.height;
+
+  // Focal is already clamped in zoomStateAt; just consume.
+  const focalPctX = zoom.focal_x;
+  const focalPctY = zoom.focal_y;
+  const translatePctX = profile.auto_zoom.pan_to_target
+    ? (0.5 - focalPctX * peakScale) * 100 * progress
     : 0;
-  const bgParallaxY = zoom.active
-    ? -((zoom.envelope?.focal_y ?? height / 2) - height / 2) *
-      profile.background.parallax_factor *
-      (easedScale - 1)
+  const translatePctY = profile.auto_zoom.pan_to_target
+    ? (0.5 - focalPctY * peakScale) * 100 * progress
     : 0;
 
-  // Compute cursor position for this frame (with spring smoothing applied).
+  // principle 9 (secondary animation): bg drifts opposite to zoom motion.
+  const bgParallaxX = zoom.active
+    ? -(focalPctX - 0.5) * viewport_w * profile.background.parallax_factor * (easedScale - 1)
+    : 0;
+  const bgParallaxY = zoom.active
+    ? -(focalPctY - 0.5) * viewport_h * profile.background.parallax_factor * (easedScale - 1)
+    : 0;
+
+  // Cursor position for this frame (spring-smoothed, in viewport coords).
   const frameIndex = Math.min(cursorTrajectory.length - 1, frame);
   const cur = cursorTrajectory[frameIndex] ?? { x: 0, y: 0, speed_px_per_s: 0 };
 
-  // Map timeline frame → an index into manifest.frame_indices. This handles
-  // missing frames (CDP screencast can drop a few under load) by falling
-  // back to the nearest existing neighbor.
+  // Map timeline frame → existing source frame index, with neighbor fallback.
   const indices = manifest.frame_indices?.length
     ? manifest.frame_indices
     : Array.from({ length: manifest.frame_count }, (_, i) => i);
   const ratio = manifest.duration_ms > 0 ? t_ms / manifest.duration_ms : 0;
-  const sliceIdx = Math.min(indices.length - 1, Math.max(0, Math.round(ratio * (indices.length - 1))));
+  const sliceIdx = Math.min(
+    indices.length - 1,
+    Math.max(0, Math.round(ratio * (indices.length - 1))),
+  );
   const sourceFrameIndex = indices[sliceIdx] ?? 0;
-  // frames_url_prefix is a path relative to Remotion's publicDir. staticFile()
-  // resolves it against the bundle's serve URL so Chromium's file:// scheme
-  // restrictions don't bite us. If the prefix is absolute (file:// or http://)
-  // we pass it through unchanged for backward compat.
   const relPath = `${frames_url_prefix}/frame_${String(sourceFrameIndex).padStart(6, "0")}.png`;
   const sourceFrameUrl =
     frames_url_prefix.startsWith("http") || frames_url_prefix.startsWith("file:")
       ? relPath
       : staticFile(relPath);
 
-  // Auto-zoom translate: pan focal point into the center of the framed area.
-  const focalX = zoom.envelope?.focal_x ?? width / 2;
-  const focalY = zoom.envelope?.focal_y ?? height / 2;
-  const translateX = profile.auto_zoom.pan_to_target ? (width / 2 - focalX) * (easedScale - 1) : 0;
-  const translateY = profile.auto_zoom.pan_to_target ? (height / 2 - focalY) * (easedScale - 1) : 0;
+  // Combined scene transform — Recordly-style: translate then scale, with
+  // transform-origin at top-left (0 0). CSS reads right-to-left so this
+  // applies scale first, then translate.
+  const sceneTransform = `translate(${translatePctX}%, ${translatePctY}%) scale(${easedScale})`;
+
+  // Use width/height to mark them as referenced (Remotion's video config
+  // dimensions; useful for future per-canvas math).
+  void width;
+  void height;
 
   return (
     <AbsoluteFill>
@@ -139,33 +168,39 @@ export const PolishComposition: React.FC<CompositionProps> = ({
         parallax_y={bgParallaxY}
       />
 
-      {/* L2 + L3: Frame chrome wrapping the recording */}
+      {/* L2 + L3 + L4 + L5: Frame chrome wrapping a single SCENE group that
+          contains the recording AND the cursor in shared viewport coords.
+          Auto-zoom transforms the whole group, so cursor stays glued to
+          the right pixel of the recording during zoom. */}
       <Frame profile={profile.frame} layout={profile.layout} brand={profile.brand}>
         <div
           style={{
             position: "absolute",
             inset: 0,
-            transform: `scale(${easedScale}) translate(${translateX / easedScale}px, ${translateY / easedScale}px)`,
-            transformOrigin: "center center",
+            transform: sceneTransform,
+            transformOrigin: "0 0",
             willChange: "transform",
+            overflow: "hidden",
           }}
         >
           <Img
             src={sourceFrameUrl}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          />
+          {/* Cursor lives inside the scene; positioned in viewport % so it
+              tracks the recording under any frame size or zoom transform. */}
+          <Cursor
+            x={cur.x}
+            y={cur.y}
+            viewport_width={viewport_w}
+            viewport_height={viewport_h}
+            speed_px_per_s={cur.speed_px_per_s ?? 0}
+            events={events}
+            t_ms={t_ms}
+            profile={profile.cursor}
           />
         </div>
       </Frame>
-
-      {/* L4 + L5: Cursor overlay with bounce + motion blur */}
-      <Cursor
-        x={cur.x}
-        y={cur.y}
-        speed_px_per_s={cur.speed_px_per_s ?? 0}
-        events={events}
-        t_ms={t_ms}
-        profile={profile.cursor}
-      />
 
       {/* L6: Captions, optional */}
       {profile.captions.mode !== "off" && (
@@ -178,7 +213,10 @@ export const PolishComposition: React.FC<CompositionProps> = ({
       {/* Outro fade overlay */}
       {profile.outro.duration_ms > 0 && (
         <Sequence
-          from={Math.max(0, fps * (manifest.duration_ms / 1000) - fps * (profile.outro.duration_ms / 1000))}
+          from={Math.max(
+            0,
+            fps * (manifest.duration_ms / 1000) - fps * (profile.outro.duration_ms / 1000),
+          )}
           durationInFrames={Math.ceil(fps * (profile.outro.duration_ms / 1000))}
         >
           <OutroFade profile={profile} />
@@ -187,6 +225,10 @@ export const PolishComposition: React.FC<CompositionProps> = ({
     </AbsoluteFill>
   );
 };
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
 
 const OutroFade: React.FC<{ profile: PolishProfile }> = ({ profile }) => {
   const frame = useCurrentFrame();

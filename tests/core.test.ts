@@ -73,7 +73,7 @@ describe("springs (principles 3, 7)", () => {
     expect(Math.abs(state.velocity)).toBeLessThan(1);
   });
 
-  it("trajectory has length proportional to span", () => {
+  it("trajectory has length proportional to span (no tail)", () => {
     const traj = resolveSpringTrajectory(
       [
         { t_ms: 0, x: 0, y: 0 },
@@ -81,9 +81,30 @@ describe("springs (principles 3, 7)", () => {
       ],
       { stiffness: 180, damping: 22, mass: 1 },
       60,
+      0, // no settling tail for this test
     );
     expect(traj.length).toBeGreaterThan(50);
     expect(traj.length).toBeLessThan(70);
+  });
+
+  it("trajectory includes settling tail past the last keypoint", () => {
+    const tail = 90;
+    const traj = resolveSpringTrajectory(
+      [
+        { t_ms: 0, x: 0, y: 0 },
+        { t_ms: 1000, x: 100, y: 100 },
+      ],
+      { stiffness: 180, damping: 22, mass: 1 },
+      60,
+      tail,
+    );
+    // Without tail: ~61 frames. With tail of 90: ~151.
+    expect(traj.length).toBeGreaterThan(140);
+    // Final frame should have spring fully settled near (100, 100).
+    const last = traj[traj.length - 1];
+    expect(last).toBeDefined();
+    expect(Math.abs((last?.x ?? 0) - 100)).toBeLessThan(1);
+    expect(Math.abs((last?.y ?? 0) - 100)).toBeLessThan(1);
   });
 });
 
@@ -203,13 +224,30 @@ describe("auto-zoom resolver (principle 8 restraint)", () => {
     expect(env.length).toBe(1);
   });
 
-  it("allows zooms that are far enough apart", () => {
+  it("merges close-in-time clicks into a single connected-pan envelope", () => {
+    // Two clicks 2s apart — with default 700ms hold + 400ms out, the gap
+    // between envelope-end and next click is ~900ms < CHAINED_GAP_MS (1350).
+    // Connected-pan kicks in: ONE envelope with TWO sub-clicks.
     const events = [
       { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
       { kind: "click" as const, t_ms: 3000, x: 200, y: 200 },
     ];
     const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom);
+    expect(env.length).toBe(1);
+    expect(env[0]?.sub_clicks.length).toBe(2);
+  });
+
+  it("splits zooms that are far apart into separate envelopes", () => {
+    // Click A at t=1000, envelope ends ~2100, recover ends ~2350. Click B
+    // at t=5000 leaves a gap of 2900ms, well past CHAINED_GAP_MS — separate.
+    const events = [
+      { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
+      { kind: "click" as const, t_ms: 5000, x: 200, y: 200 },
+    ];
+    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom);
     expect(env.length).toBe(2);
+    expect(env[0]?.sub_clicks.length).toBe(1);
+    expect(env[1]?.sub_clicks.length).toBe(1);
   });
 
   it("respects no_zoom flag on event", () => {
@@ -230,13 +268,30 @@ describe("auto-zoom resolver (principle 8 restraint)", () => {
     expect(state.current_scale).toBe(1.0);
   });
 
-  it("returns peak scale during hold phase", () => {
+  it("returns peak scale during hold phase (matches profile.auto_zoom.scale)", () => {
     const env = resolveZoomEnvelopes(
       [{ kind: "click" as const, t_ms: 1000, x: 100, y: 100 }],
       DEFAULT_POLISH_PROFILE.auto_zoom,
     );
-    const state = zoomStateAt(1100, env, DEFAULT_POLISH_PROFILE.auto_zoom);
+    // Use a t_ms after peak (which equals click time) but before out_start.
+    const state = zoomStateAt(1300, env, DEFAULT_POLISH_PROFILE.auto_zoom);
     expect(state.active).toBe(true);
-    expect(state.current_scale).toBeCloseTo(1.4, 1);
+    expect(state.current_scale).toBeCloseTo(DEFAULT_POLISH_PROFILE.auto_zoom.scale, 2);
+  });
+
+  it("clamps the focal to the geometrically achievable window", () => {
+    // Click at viewport (50, 100) on 1280x800 = normalized (0.039, 0.125).
+    // At scale 1.4, focal bounds are [1/(2*1.4), 1-1/(2.8)] = [0.357, 0.643].
+    // The clamped focal should be (0.357, 0.357) — pinned at the corner of
+    // the achievable window.
+    const env = resolveZoomEnvelopes(
+      [{ kind: "click" as const, t_ms: 1000, x: 50, y: 100 }],
+      DEFAULT_POLISH_PROFILE.auto_zoom,
+      { viewport_width: 1280, viewport_height: 800 },
+    );
+    const sub = env[0]?.sub_clicks[0];
+    expect(sub).toBeDefined();
+    expect(sub?.focal_x).toBeCloseTo(1 / (2 * 1.4), 3);
+    expect(sub?.focal_y).toBeCloseTo(1 / (2 * 1.4), 3);
   });
 });

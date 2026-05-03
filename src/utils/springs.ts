@@ -69,13 +69,18 @@ export function resolveSpringTrajectory(
   keypoints: KeyPoint[],
   cfg: SpringConfig,
   fps: number,
+  /** Extra frames after the last keypoint so the spring has time to settle.
+   *  Default 90 frames @ 60fps = 1.5s. Without this, the cursor freezes at
+   *  whatever position the spring happened to be at when the last sample
+   *  arrived — typically *before* it has reached the final target. */
+  tail_frames = 90,
 ): ResolvedFrame[] {
   if (keypoints.length === 0) return [];
   const sorted = [...keypoints].sort((a, b) => a.t_ms - b.t_ms);
   const lastT = sorted[sorted.length - 1]?.t_ms ?? 0;
   const dtSec = 1 / fps;
   const dtMs = (1000 * 1) / fps;
-  const totalFrames = Math.ceil(lastT / dtMs) + 1;
+  const totalFrames = Math.ceil(lastT / dtMs) + 1 + tail_frames;
 
   const startX = sorted[0]?.x ?? 0;
   const startY = sorted[0]?.y ?? 0;

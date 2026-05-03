@@ -42,6 +42,15 @@ export interface RecordResult {
 /** Page-side mousemove throttle. ~8ms = ~125Hz max sample rate. */
 const CURSOR_THROTTLE_MS = 8;
 
+/**
+ * Minimum settle time after a page navigates and reaches networkidle, before
+ * the recorder advances to the next plan step. Hosted sites often finish
+ * networkidle while hero fonts/animations are still resolving, so the demo
+ * starts mid-render. 1500ms is the calibrated minimum where the demo always
+ * starts on a fully-painted page.
+ */
+const POST_NAV_SETTLE_MS = 1500;
+
 export async function recordPlaywright(opts: RecordOptions): Promise<RecordResult> {
   const id = opts.recording_id ?? `${opts.plan.id}-${Date.now()}`;
   const dir = recordingDir(opts.paths, id);
@@ -164,12 +173,14 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     { throttleMs: CURSOR_THROTTLE_MS },
   );
 
-  // Seed the cursor trajectory with a t=0 sample at viewport center so the
-  // spring has a sensible starting position before any mousemove fires.
+  // Seed the cursor trajectory off-screen at t=0 so the cursor is invisible
+  // during the page-load period before any real mousemove fires. When the
+  // first action's mouse.move kicks in, the spring animates from off-screen
+  // into the scene — feels like the cursor "enters" the frame intentionally.
   cursorSamples.push({
     t_ms: 0,
-    x: opts.capture.viewport.width / 2,
-    y: opts.capture.viewport.height / 2,
+    x: -200,
+    y: -200,
   });
 
   // ── Start CDP screencast ────────────────────────────────────────────────
@@ -258,6 +269,9 @@ async function executeStep(page: Page, step: PlanStep, stepIndex: number): Promi
     case "navigate": {
       const url = step.selector ?? "";
       await page.goto(url, { waitUntil: "networkidle", timeout: 15_000 }).catch(() => {});
+      // Mandatory post-load settle so demos always start on a fully-painted
+      // page, never mid-hero-animation.
+      await safeWait(POST_NAV_SETTLE_MS);
       await safeWait(step.expected_duration_ms);
       break;
     }

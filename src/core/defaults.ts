@@ -42,13 +42,20 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
   // principles 2/7/8
   auto_zoom: {
     trigger: "click_event",
-    scale: 1.4, // principle 8: emphatic without cartoony
+    // 1.4× is the calibrated default. The compositor's focal-clamp pattern
+    // (compositor/auto-zoom.ts: getFocusBoundsForScale) keeps the recording
+    // covering the frame at any zoom level — the focal point is clamped
+    // into the achievable window rather than the pan being clamped.
+    scale: 1.4,
+    // Asymmetric durations — zoom-IN is slower than zoom-OUT. Recordly uses
+    // ~1.5x ratio (1522ms in / 1015ms out); we use 600/400 = 1.5x. Slower in
+    // reads as deliberate; faster out keeps cuts crisp.
     ease_in: "quart_out",
     ease_out: "cubic_in_out",
-    duration_in_ms: 400,
-    duration_out_ms: 500,
+    duration_in_ms: 600,
+    duration_out_ms: 400,
     hold_after_ms: 700,
-    skip_if_within_ms: 800, // principle 8 restraint
+    skip_if_within_ms: 800, // principle 8 restraint (suppress double-zooms)
     pan_to_target: true,
     cursor_recover_ms: 250, // principle 7
     max_scale_per_video: 1.6, // principle 8 restraint cap
