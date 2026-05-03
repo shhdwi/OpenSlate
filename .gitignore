@@ -1,0 +1,19 @@
+node_modules
+dist
+.DS_Store
+*.log
+
+# openSlate output
+recordings/
+demos/
+benchmark/raw/
+.openslate-cache/
+
+# editor
+.vscode/
+.idea/
+*.swp
+
+# env
+.env
+.env.local

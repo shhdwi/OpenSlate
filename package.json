@@ -1,0 +1,88 @@
+{
+  "name": "openslate",
+  "version": "0.0.1",
+  "description": "Agent-native screen recorder + motion-design polish for AI coding tools. The dev never leaves their editor.",
+  "license": "Apache-2.0",
+  "author": "Shrish <dwi.shrish@gmail.com>",
+  "homepage": "https://github.com/shhdwi/openslate",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shhdwi/openslate.git"
+  },
+  "bugs": "https://github.com/shhdwi/openslate/issues",
+  "keywords": [
+    "screen-recorder",
+    "demo-video",
+    "motion-design",
+    "remotion",
+    "playwright",
+    "claude-code",
+    "cursor",
+    "codex",
+    "mcp",
+    "agent",
+    "dev-tools"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "openslate": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
+    "./compositor": {
+      "types": "./dist/compositor/index.d.ts",
+      "import": "./dist/compositor/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "format": "biome format . --write",
+    "typecheck": "tsc --noEmit",
+    "mcp": "bun src/mcp/index.ts",
+    "cli": "bun src/cli/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@remotion/bundler": "^4.0.241",
+    "@remotion/cli": "^4.0.241",
+    "@remotion/renderer": "^4.0.241",
+    "commander": "^12.1.0",
+    "playwright-core": "^1.49.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.241",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
