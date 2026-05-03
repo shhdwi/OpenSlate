@@ -13,7 +13,6 @@
 
 import path from "node:path";
 import fs from "node:fs/promises";
-import { pathToFileURL } from "node:url";
 import type { ExportPreset, PolishProfile } from "../core/types.js";
 import type { CursorSample, RecordedEvent, RecordingManifest } from "../recorder/events.js";
 
@@ -70,13 +69,32 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     path.join(opts.recording_dir, opts.manifest.cursor_file),
   );
 
-  const framesAbs = path.join(opts.recording_dir, opts.manifest.frames_dir);
-  const frames_url_prefix = pathToFileURL(framesAbs).toString();
+  // Frames live in opts.recording_dir/frames. We pass the recording dir as
+  // Remotion's publicDir so the bundle serves frames at its own origin —
+  // sidesteps Chromium's file:// scheme restrictions during render.
+  // The composition consumes frames at `<frames_dir>/frame_NNNNNN.png`
+  // (relative to bundle root) — i.e. `frames_url_prefix` is the relative
+  // dir name within the served bundle.
+  const frames_url_prefix = opts.manifest.frames_dir;
 
-  // Bundle the Remotion entry.
+  // Bundle the Remotion entry. webpackOverride teaches webpack that `.js`
+  // import specifiers may resolve to .tsx/.ts sources — needed when the
+  // entry is the .tsx in src/ (TS-ESM convention requires .js suffixes).
+  // publicDir copies the recording's frames into the bundle's static area
+  // so the renderer can load them via http(s) (or file://) at bundle origin.
   const bundleLocation = await bundle({
     entryPoint: entryPath,
-    webpackOverride: (cfg) => cfg,
+    publicDir: opts.recording_dir,
+    webpackOverride: (cfg) => ({
+      ...cfg,
+      resolve: {
+        ...cfg.resolve,
+        extensionAlias: {
+          ".js": [".tsx", ".ts", ".js"],
+          ".jsx": [".tsx", ".jsx"],
+        },
+      },
+    }),
   });
 
   const inputProps = {
@@ -116,6 +134,11 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     imageFormat: "jpeg",
     jpegQuality: 92,
     crf: opts.preset.format === "gif" ? undefined : 18,
+    // Recording frames live at file:// paths; Chromium's default policy
+    // blocks file:// loads from a non-file:// origin (the bundled serve URL).
+    // Disable web security for the render pass only — Remotion launches a
+    // dedicated headless instance, so this scope is safe.
+    chromiumOptions: { disableWebSecurity: true },
   });
 
   const stat = await fs.stat(opts.output_path);

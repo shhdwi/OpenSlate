@@ -174,6 +174,9 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
 
   // ── Start CDP screencast ────────────────────────────────────────────────
   // v1 simple capture; v1.5 should switch to HeadlessExperimental.beginFrame.
+  // Race fix: capture frameIndex atomically with post-increment BEFORE the
+  // async writeFile yields. Otherwise two handlers can read the same index
+  // and overwrite each other's output, producing gaps in the sequence.
   const client = await context.newCDPSession(page);
   let frameIndex = 0;
   await client.send("Page.startScreencast", {
@@ -182,10 +185,14 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     everyNthFrame: 1,
   });
   client.on("Page.screencastFrame", async (event) => {
+    const myIndex = frameIndex++; // atomic in single-threaded JS event loop
     const buffer = Buffer.from(event.data, "base64");
-    const fname = path.join(framesDir, `frame_${String(frameIndex).padStart(6, "0")}.png`);
-    await fs.writeFile(fname, buffer);
-    frameIndex++;
+    const fname = path.join(framesDir, `frame_${String(myIndex).padStart(6, "0")}.png`);
+    try {
+      await fs.writeFile(fname, buffer);
+    } catch (err) {
+      console.error(`[recorder] failed to write frame ${myIndex}:`, err);
+    }
     await client.send("Page.screencastFrameAck", { sessionId: event.sessionId }).catch(() => {});
   });
 
@@ -214,6 +221,14 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     fs.writeFile(planFile, JSON.stringify(opts.plan, null, 2)),
   ]);
 
+  // Scan the frames dir to record exactly which indices made it to disk —
+  // protects the compositor from any residual gaps.
+  const frameFiles = await fs.readdir(framesDir);
+  const frame_indices = frameFiles
+    .filter((f) => /^frame_\d+\.png$/.test(f))
+    .map((f) => Number.parseInt(f.replace(/[^\d]/g, ""), 10))
+    .sort((a, b) => a - b);
+
   const manifest: RecordingManifest = {
     id,
     created_at: new Date().toISOString(),
@@ -221,7 +236,8 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     fps: opts.capture.fps,
     viewport: opts.capture.viewport,
     device_pixel_ratio: opts.capture.device_pixel_ratio,
-    frame_count: frameIndex,
+    frame_count: frame_indices.length,
+    frame_indices,
     frames_dir: "frames",
     events_file: "events.json",
     cursor_file: "cursor.json",

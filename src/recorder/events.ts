@@ -49,7 +49,13 @@ export interface RecordingManifest {
   fps: number;
   viewport: { width: number; height: number };
   device_pixel_ratio: number;
+  /** Number of frames captured (may differ from frame_indices.length under
+   *  race recovery; downstream consumers should prefer frame_indices). */
   frame_count: number;
+  /** Sorted list of indices that actually exist on disk in `frames_dir`.
+   *  Composition maps timeline frames into this array so missing frames
+   *  fall back to the nearest neighbor. */
+  frame_indices: number[];
   /** path relative to recording dir, where frames live (e.g. "frames/") */
   frames_dir: string;
   /** path to events.json relative to recording dir */

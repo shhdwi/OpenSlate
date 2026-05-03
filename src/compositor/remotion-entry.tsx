@@ -24,6 +24,7 @@ const defaultProps = {
     viewport: { width: 1280, height: 800 },
     device_pixel_ratio: 2,
     frame_count: 300,
+    frame_indices: [],
     frames_dir: "frames",
     events_file: "events.json",
     cursor_file: "cursor.json",

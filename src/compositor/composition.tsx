@@ -13,7 +13,15 @@
  */
 
 import React from "react";
-import { AbsoluteFill, Img, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import {
+  AbsoluteFill,
+  Img,
+  Sequence,
+  interpolate,
+  staticFile,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
 
 import type { PolishProfile } from "../core/types.js";
 import type { CursorSample, RecordedEvent, RecordingManifest } from "../recorder/events.js";
@@ -96,12 +104,24 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   const frameIndex = Math.min(cursorTrajectory.length - 1, frame);
   const cur = cursorTrajectory[frameIndex] ?? { x: 0, y: 0, speed_px_per_s: 0 };
 
-  // Frame index for the recording playback. Map timeline frame → source frame.
-  const sourceFrameIndex = Math.min(
-    manifest.frame_count - 1,
-    Math.round((t_ms / manifest.duration_ms) * (manifest.frame_count - 1)),
-  );
-  const sourceFrameUrl = `${frames_url_prefix}/frame_${String(sourceFrameIndex).padStart(6, "0")}.png`;
+  // Map timeline frame → an index into manifest.frame_indices. This handles
+  // missing frames (CDP screencast can drop a few under load) by falling
+  // back to the nearest existing neighbor.
+  const indices = manifest.frame_indices?.length
+    ? manifest.frame_indices
+    : Array.from({ length: manifest.frame_count }, (_, i) => i);
+  const ratio = manifest.duration_ms > 0 ? t_ms / manifest.duration_ms : 0;
+  const sliceIdx = Math.min(indices.length - 1, Math.max(0, Math.round(ratio * (indices.length - 1))));
+  const sourceFrameIndex = indices[sliceIdx] ?? 0;
+  // frames_url_prefix is a path relative to Remotion's publicDir. staticFile()
+  // resolves it against the bundle's serve URL so Chromium's file:// scheme
+  // restrictions don't bite us. If the prefix is absolute (file:// or http://)
+  // we pass it through unchanged for backward compat.
+  const relPath = `${frames_url_prefix}/frame_${String(sourceFrameIndex).padStart(6, "0")}.png`;
+  const sourceFrameUrl =
+    frames_url_prefix.startsWith("http") || frames_url_prefix.startsWith("file:")
+      ? relPath
+      : staticFile(relPath);
 
   // Auto-zoom translate: pan focal point into the center of the framed area.
   const focalX = zoom.envelope?.focal_x ?? width / 2;
