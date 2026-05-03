@@ -2,7 +2,15 @@
  * Playwright-driven recorder. Captures:
  *   - Frame sequence as PNG via CDP Page.startScreencast (v1)
  *   - Structured event log (clicks, inputs, navigations, hovers)
- *   - Continuous cursor samples for spring-resolution at compose time
+ *   - Continuous cursor samples via a page-side mousemove listener that
+ *     emits through Playwright's exposeBinding (no polling, sub-frame accurate)
+ *
+ * Cursor sampling design (changed from setInterval polling):
+ *   - Page-side mousemove listener throttles to ~8ms (≈125Hz max)
+ *   - Each sample emits through __openslate_emit with kind "cursor_move"
+ *   - Node-side handler routes cursor_move → cursorSamples (vs. events)
+ *   - Click events also push a synthetic cursor sample at the click position,
+ *     so the cursor's resolved trajectory always passes through every click
  *
  * v1 uses startScreencast (good enough; ~30-60fps achievable on modern hardware).
  * v1.5 will swap to HeadlessExperimental.beginFrame for true frame-perfect 60fps
@@ -31,7 +39,8 @@ export interface RecordResult {
   manifest: RecordingManifest;
 }
 
-const CURSOR_POLL_MS = 16; // ~60Hz cursor sampling
+/** Page-side mousemove throttle. ~8ms = ~125Hz max sample rate. */
+const CURSOR_THROTTLE_MS = 8;
 
 export async function recordPlaywright(opts: RecordOptions): Promise<RecordResult> {
   const id = opts.recording_id ?? `${opts.plan.id}-${Date.now()}`;
@@ -58,55 +67,109 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     }
   });
 
-  // Inject script to forward DOM events back via console binding.
-  await page.exposeBinding("__openslate_emit", (_src, payload: RecordedEvent) => {
-    events.push({ ...payload, t_ms: tNow() });
+  // ── Routing handler: cursor_move → cursorSamples; everything else → events.
+  // Click events also push a synthetic cursor sample at the click position so
+  // the resolved spring trajectory always passes through the click point.
+  type EmittedPayload = {
+    kind: string;
+    t_ms?: number;
+    x?: number;
+    y?: number;
+    target?: string;
+    value?: string;
+  };
+  await page.exposeBinding("__openslate_emit", (_src, payload: EmittedPayload) => {
+    const t = tNow();
+    if (payload.kind === "cursor_move") {
+      cursorSamples.push({ t_ms: t, x: payload.x ?? 0, y: payload.y ?? 0 });
+      return;
+    }
+    if (payload.kind === "click") {
+      cursorSamples.push({ t_ms: t, x: payload.x ?? 0, y: payload.y ?? 0 });
+    }
+    events.push({ ...(payload as RecordedEvent), t_ms: t });
   });
 
-  await page.addInitScript(() => {
-    const w = window as unknown as { __openslate_emit?: (e: unknown) => void };
-    if (!w.__openslate_emit) return;
-    document.addEventListener(
-      "click",
-      (e) => {
-        const target = e.target as HTMLElement | null;
-        w.__openslate_emit?.({
-          kind: "click",
-          t_ms: 0,
-          x: e.clientX,
-          y: e.clientY,
-          target: target ? cssPath(target) : undefined,
-        });
-      },
-      { capture: true },
-    );
-    document.addEventListener(
-      "scroll",
-      () => {
-        w.__openslate_emit?.({
-          kind: "scroll",
-          t_ms: 0,
-          x: window.scrollX,
-          y: window.scrollY,
-        });
-      },
-      { capture: true, passive: true },
-    );
+  // ── Page-side listeners: mousemove (throttled) + click + scroll.
+  await page.addInitScript(
+    ({ throttleMs }) => {
+      const w = window as unknown as {
+        __openslate_emit?: (e: unknown) => void;
+        __openslate_lastMove?: number;
+      };
+      if (!w.__openslate_emit) return;
+      w.__openslate_lastMove = 0;
 
-    function cssPath(el: HTMLElement): string {
-      const parts: string[] = [];
-      let cur: HTMLElement | null = el;
-      while (cur && cur !== document.body && parts.length < 6) {
-        const tag = cur.tagName.toLowerCase();
-        const id = cur.id ? `#${cur.id}` : "";
-        const cls = cur.className && typeof cur.className === "string"
-          ? `.${cur.className.trim().split(/\s+/).slice(0, 2).join(".")}`
-          : "";
-        parts.unshift(`${tag}${id}${cls}`);
-        cur = cur.parentElement;
+      // Cursor stream — direct binding, throttled on the page side.
+      document.addEventListener(
+        "mousemove",
+        (e) => {
+          const now = performance.now();
+          const last = w.__openslate_lastMove ?? 0;
+          if (now - last < throttleMs) return;
+          w.__openslate_lastMove = now;
+          w.__openslate_emit?.({
+            kind: "cursor_move",
+            x: e.clientX,
+            y: e.clientY,
+          });
+        },
+        { capture: true, passive: true },
+      );
+
+      // Click — semantic event + drives auto-zoom + click-bounce timing.
+      document.addEventListener(
+        "click",
+        (e) => {
+          const target = e.target as HTMLElement | null;
+          w.__openslate_emit?.({
+            kind: "click",
+            x: e.clientX,
+            y: e.clientY,
+            target: target ? cssPath(target) : undefined,
+          });
+        },
+        { capture: true },
+      );
+
+      // Scroll — semantic event for caption / pacing context.
+      document.addEventListener(
+        "scroll",
+        () => {
+          w.__openslate_emit?.({
+            kind: "scroll",
+            x: window.scrollX,
+            y: window.scrollY,
+          });
+        },
+        { capture: true, passive: true },
+      );
+
+      function cssPath(el: HTMLElement): string {
+        const parts: string[] = [];
+        let cur: HTMLElement | null = el;
+        while (cur && cur !== document.body && parts.length < 6) {
+          const tag = cur.tagName.toLowerCase();
+          const id = cur.id ? `#${cur.id}` : "";
+          const cls =
+            cur.className && typeof cur.className === "string"
+              ? `.${cur.className.trim().split(/\s+/).slice(0, 2).join(".")}`
+              : "";
+          parts.unshift(`${tag}${id}${cls}`);
+          cur = cur.parentElement;
+        }
+        return parts.join(" > ");
       }
-      return parts.join(" > ");
-    }
+    },
+    { throttleMs: CURSOR_THROTTLE_MS },
+  );
+
+  // Seed the cursor trajectory with a t=0 sample at viewport center so the
+  // spring has a sensible starting position before any mousemove fires.
+  cursorSamples.push({
+    t_ms: 0,
+    x: opts.capture.viewport.width / 2,
+    y: opts.capture.viewport.height / 2,
   });
 
   // ── Start CDP screencast ────────────────────────────────────────────────
@@ -126,32 +189,6 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     await client.send("Page.screencastFrameAck", { sessionId: event.sessionId }).catch(() => {});
   });
 
-  // Cursor tracker. Playwright doesn't expose a native cursor stream so we
-  // poll the mouse position by overlaying a global mousemove listener.
-  await page.addInitScript(() => {
-    const w = window as unknown as {
-      __openslate_cursor?: { x: number; y: number };
-    };
-    w.__openslate_cursor = { x: 0, y: 0 };
-    document.addEventListener("mousemove", (e) => {
-      w.__openslate_cursor = { x: e.clientX, y: e.clientY };
-    });
-  });
-  let cursorPollTimer: NodeJS.Timeout | null = null;
-  const pollCursor = async () => {
-    try {
-      const pos = await page.evaluate(() => {
-        const w = window as unknown as { __openslate_cursor?: { x: number; y: number } };
-        return w.__openslate_cursor ?? { x: 0, y: 0 };
-      });
-      cursorSamples.push({ t_ms: tNow(), x: pos.x, y: pos.y });
-    } catch {
-      // page closed; stop
-      if (cursorPollTimer) clearInterval(cursorPollTimer);
-    }
-  };
-  cursorPollTimer = setInterval(pollCursor, CURSOR_POLL_MS);
-
   // ── Execute plan ────────────────────────────────────────────────────────
   events.push({ kind: "frame_start", t_ms: tNow() });
 
@@ -163,7 +200,6 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   const totalDurationMs = tNow();
 
   // ── Tear down ───────────────────────────────────────────────────────────
-  if (cursorPollTimer) clearInterval(cursorPollTimer);
   await client.send("Page.stopScreencast").catch(() => {});
   await browser.close();
 

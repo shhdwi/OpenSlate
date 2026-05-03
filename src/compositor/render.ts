@@ -39,13 +39,27 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
   const { bundle } = await import("@remotion/bundler");
   const { renderMedia, selectComposition } = await import("@remotion/renderer");
 
-  const entryPath = path.resolve(import.meta.dirname ?? __dirname, "./remotion-entry.js");
-  // Verify the bundled entry exists in dist/. If running from src/, the
-  // tsup build outputs entry to dist/compositor/remotion-entry.js.
-  const entryExists = await fileExists(entryPath);
-  if (!entryExists) {
+  // Resolve the Remotion entry. In production (consumed via npm), we ship
+  // dist/compositor/remotion-entry.js next to render.js. In dev (running
+  // from src/ via bun), we fall back to the .tsx source — Remotion's bundler
+  // accepts both. Final fallback: the dist build, if a previous `bun run
+  // build` produced one.
+  const dirname = import.meta.dirname ?? __dirname;
+  const entryCandidates = [
+    path.resolve(dirname, "./remotion-entry.js"),
+    path.resolve(dirname, "./remotion-entry.tsx"),
+    path.resolve(dirname, "../../dist/compositor/remotion-entry.js"),
+  ];
+  let entryPath: string | null = null;
+  for (const candidate of entryCandidates) {
+    if (await fileExists(candidate)) {
+      entryPath = candidate;
+      break;
+    }
+  }
+  if (!entryPath) {
     throw new Error(
-      `openSlate: Remotion entry not found at ${entryPath}. Run \`bun run build\` first.`,
+      `openSlate: Remotion entry not found. Looked in:\n${entryCandidates.map((c) => `  - ${c}`).join("\n")}\nRun \`bun run build\` or invoke from a built install.`,
     );
   }
 

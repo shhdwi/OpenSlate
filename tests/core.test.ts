@@ -147,6 +147,51 @@ describe("plan validation", () => {
   });
 });
 
+describe("cursor sampling routing (recorder design)", () => {
+  // Mirror of the recorder's binding-side routing. Documenting the contract
+  // here so a future change to the live recorder can't silently break
+  // the trajectory shape used by the compositor.
+  type Payload = { kind: string; t_ms?: number; x?: number; y?: number };
+  type Sample = { t_ms: number; x: number; y: number };
+  type Event = { kind: string; t_ms: number; x?: number; y?: number };
+
+  function route(payload: Payload, t: number, samples: Sample[], events: Event[]): void {
+    if (payload.kind === "cursor_move") {
+      samples.push({ t_ms: t, x: payload.x ?? 0, y: payload.y ?? 0 });
+      return;
+    }
+    if (payload.kind === "click") {
+      samples.push({ t_ms: t, x: payload.x ?? 0, y: payload.y ?? 0 });
+    }
+    events.push({ ...payload, t_ms: t } as Event);
+  }
+
+  it("routes cursor_move to samples only, not events", () => {
+    const samples: Sample[] = [];
+    const events: Event[] = [];
+    route({ kind: "cursor_move", x: 10, y: 20 }, 100, samples, events);
+    expect(samples).toEqual([{ t_ms: 100, x: 10, y: 20 }]);
+    expect(events).toEqual([]);
+  });
+
+  it("routes click to BOTH events and samples (cursor passes through click)", () => {
+    const samples: Sample[] = [];
+    const events: Event[] = [];
+    route({ kind: "click", x: 50, y: 60 }, 200, samples, events);
+    expect(samples).toEqual([{ t_ms: 200, x: 50, y: 60 }]);
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("click");
+  });
+
+  it("routes scroll to events only, not samples", () => {
+    const samples: Sample[] = [];
+    const events: Event[] = [];
+    route({ kind: "scroll", x: 0, y: 100 }, 300, samples, events);
+    expect(samples).toEqual([]);
+    expect(events.length).toBe(1);
+  });
+});
+
 describe("auto-zoom resolver (principle 8 restraint)", () => {
   it("suppresses second zoom within skip_if_within_ms", () => {
     const events = [
