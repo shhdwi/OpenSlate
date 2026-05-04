@@ -17,7 +17,9 @@ import {
   orchestrateExecute,
   orchestrateExport,
   orchestratePlan,
+  orchestratePlanEdit,
 } from "../core/orchestrate.js";
+import { summarizeEditPlan } from "../plan/edit-plan.js";
 import { startMcpServer } from "../mcp/index.js";
 import { ensureProjectDirs, recordingDir } from "../utils/paths.js";
 import { initProject } from "./init.js";
@@ -91,10 +93,27 @@ program
       const exec = await orchestrateExecute({ plan: planResult.plan });
       console.log(`✓ recorded ${exec.manifest.frame_count} frames in ${exec.recording_dir}`);
 
+      const planEdit = await orchestratePlanEdit({ recording_id: exec.recording_id });
+      console.log(`✓ wrote ${path.relative(process.cwd(), planEdit.edit_plan_path)}`);
+      console.log(summarizeEditPlan(planEdit.edit_plan));
+
       const out = await orchestrateExport({ recording_id: exec.recording_id });
       console.log(`✓ exported ${path.relative(process.cwd(), out.output_path)} · ${(out.size_bytes / 1024 / 1024).toFixed(2)} MB`);
     },
   );
+
+program
+  .command("plan <recording_id>")
+  .description("Build (or rebuild) the edit plan for an existing recording.")
+  .option("--force", "regenerate edit-plan.json even if one already exists", false)
+  .action(async (recording_id: string, opts: { force?: boolean }) => {
+    const result = await orchestratePlanEdit({
+      recording_id,
+      force: opts.force ?? false,
+    });
+    console.log(`✓ ${path.relative(process.cwd(), result.edit_plan_path)}`);
+    console.log(summarizeEditPlan(result.edit_plan));
+  });
 
 program
   .command("export <recording_id>")

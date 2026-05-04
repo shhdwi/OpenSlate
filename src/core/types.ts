@@ -84,31 +84,64 @@ export interface CursorProfile {
   path_arc_amount: number;
 }
 
-// ─── Auto-zoom ───────────────────────────────────────────────────────────────
+// ─── Camera (zoom + pan) ─────────────────────────────────────────────────────
+//
+// The camera plan is no longer derived implicitly inside the renderer. Instead,
+// the `plan` step reads events.json and writes an edit-plan.json containing
+// segments + keyframes; the renderer interpolates between keyframes. Per-action
+// zoom is configured here as a TEMPLATE (peak scale, durations, easings) that
+// the planner instantiates once per matching event.
 
-export type AutoZoomTrigger = "click_event" | "focus_change" | "navigation" | "manual";
-
-export interface AutoZoomProfile {
-  trigger: AutoZoomTrigger;
-  /** principle: exaggeration — 1.4× is emphatic without cartoony */
-  scale: number;
+/** Per-action-type zoom shape. peak=1.0 means "no zoom" (wide). */
+export interface ZoomTemplate {
+  /** principle: exaggeration — 1.5× is emphatic without cartoony */
+  peak: number;
   /** principle: easings — mismatched curves: fast in, soft out */
   ease_in: EaseName;
   ease_out: EaseName;
-  /** principle: timing_and_spacing — 400ms in = 24 frames @ 60fps */
+  /** principle: timing_and_spacing — keyframe-relative durations */
   duration_in_ms: number;
+  hold_ms: number;
   duration_out_ms: number;
-  hold_after_ms: number;
-  /** principle: exaggeration restraint — suppress double-zooms on rapid clicks */
-  skip_if_within_ms: number;
+}
+
+export interface ZoomProfile {
+  /** Action-type templates. peak=1.0 disables zoom for that action. */
+  templates: {
+    click: ZoomTemplate;
+    type: ZoomTemplate;
+    hover: ZoomTemplate;
+    scroll: ZoomTemplate;
+    navigate: ZoomTemplate;
+  };
   pan_to_target: boolean;
   /** principle: follow_through — cursor re-syncs gradually after zoom resolves */
   cursor_recover_ms: number;
-  /** principle: exaggeration restraint — hard cap; agents must not exceed */
-  max_scale_per_video: number;
-  /** principle: anticipation — pre-zoom directional drift toward upcoming target (v1.5+) */
-  anticipation_drift_amount?: number;
-  anticipation_drift_ms?: number;
+  /** principle: exaggeration restraint — hard cap; planner clamps to this */
+  max_peak: number;
+  /** principle: exaggeration restraint — suppress double-zooms on rapid actions */
+  skip_if_within_ms: number;
+  /**
+   * Connected-pan: when two zoom-ins are within this gap (source time),
+   * collapse the out + in into a single sustained zoom that pans focal A → B.
+   * Recordly's CHAINED_GAP_MS pattern, preserved.
+   */
+  connected_gap_ms: number;
+}
+
+// ─── Playback (segments + speed) ─────────────────────────────────────────────
+
+export interface PlaybackProfile {
+  /** Time multiplier on output. 1.0 = realtime; 4.0 = 4× speed (Steel.dev default). */
+  rate: number;
+  /** Lead-in (ms BEFORE each salient event) included in the segment around it. */
+  segment_lead_ms: number;
+  /** Trail (ms AFTER each salient event) included in the segment. */
+  segment_trail_ms: number;
+  /** Two segments separated by less than this are merged. */
+  segment_merge_below_ms: number;
+  /** A gap of this size or more is treated as dead time and split. */
+  segment_split_above_ms: number;
 }
 
 // ─── Captions ────────────────────────────────────────────────────────────────
@@ -313,7 +346,8 @@ export interface PolishProfile {
   brand: BrandKit;
   capture: CaptureProfile;
   cursor: CursorProfile;
-  auto_zoom: AutoZoomProfile;
+  zoom: ZoomProfile;
+  playback: PlaybackProfile;
   captions: CaptionsProfile;
   frame: FrameProfile;
   background: BackgroundProfile;

@@ -56,25 +56,79 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
   },
 
   // principles 2/7/8
-  auto_zoom: {
-    trigger: "click_event",
-    // 1.4× is the calibrated default. The compositor's focal-clamp pattern
-    // (compositor/auto-zoom.ts: getFocusBoundsForScale) keeps the recording
-    // covering the frame at any zoom level — the focal point is clamped
-    // into the achievable window rather than the pan being clamped.
-    scale: 1.4,
-    // Asymmetric durations — zoom-IN is slower than zoom-OUT. Recordly uses
-    // ~1.5x ratio (1522ms in / 1015ms out); we use 600/400 = 1.5x. Slower in
-    // reads as deliberate; faster out keeps cuts crisp.
-    ease_in: "quart_out",
-    ease_out: "cubic_in_out",
-    duration_in_ms: 600,
-    duration_out_ms: 400,
-    hold_after_ms: 700,
-    skip_if_within_ms: 800, // principle 8 restraint (suppress double-zooms)
+  // Camera plan templates: each salient event type gets a default zoom
+  // shape. The planner instantiates these per matching event in events.json
+  // and writes them as keyframes into edit-plan.json. peak=1.0 means
+  // "stay wide" (no zoom) for that action type.
+  zoom: {
+    templates: {
+      click: {
+        peak: 1.5,
+        ease_in: "quart_out",
+        ease_out: "cubic_in_out",
+        duration_in_ms: 600,
+        hold_ms: 700,
+        duration_out_ms: 400,
+      },
+      type: {
+        // Highest zoom — text input is detail-heavy; the viewer needs
+        // to read what's being typed. Steel.dev pattern.
+        peak: 2.0,
+        ease_in: "quart_out",
+        ease_out: "cubic_in_out",
+        duration_in_ms: 700,
+        hold_ms: 1200,
+        duration_out_ms: 500,
+      },
+      hover: {
+        peak: 1.5,
+        ease_in: "quart_out",
+        ease_out: "cubic_in_out",
+        duration_in_ms: 600,
+        hold_ms: 500,
+        duration_out_ms: 400,
+      },
+      // Wide-view kinds (peak=1.0): the planner skips emitting keyframes
+      // for these so the camera holds the previous state.
+      scroll: {
+        peak: 1.0,
+        ease_in: "linear",
+        ease_out: "linear",
+        duration_in_ms: 0,
+        hold_ms: 0,
+        duration_out_ms: 0,
+      },
+      navigate: {
+        peak: 1.0,
+        ease_in: "linear",
+        ease_out: "linear",
+        duration_in_ms: 0,
+        hold_ms: 0,
+        duration_out_ms: 0,
+      },
+    },
     pan_to_target: true,
     cursor_recover_ms: 250, // principle 7
-    max_scale_per_video: 1.6, // principle 8 restraint cap
+    max_peak: 1.6, // principle 8 restraint cap (planner clamps to this)
+    skip_if_within_ms: 800, // restraint: suppress double-zooms
+    // Connected-pan: when two zooms are within this gap (source-time),
+    // collapse the dip-out + dip-in into a sustained zoom that pans.
+    // Recordly's CHAINED_GAP_MS pattern, preserved.
+    connected_gap_ms: 1350,
+  },
+
+  // Playback (segments + speed). Default rate=1.0 preserves realtime;
+  // bump to 4.0 for the Steel.dev-style snappy demo feel. The segment
+  // rules trim dead time around salient events (click/type/scroll/hover).
+  playback: {
+    rate: 1.0,
+    segment_lead_ms: 500,
+    // Trail covers the click animation (CLICK_FX_DELAY 250 + bounce 260
+    // + halo 700 ≈ 1300ms) plus a 200ms cushion to settle on the
+    // post-action page state.
+    segment_trail_ms: 1500,
+    segment_merge_below_ms: 2000,
+    segment_split_above_ms: 3000,
   },
 
   // principles 1/2/4

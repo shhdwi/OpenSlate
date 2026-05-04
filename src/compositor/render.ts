@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { ExportPreset, PolishProfile } from "../core/types.js";
 import type { CursorSample, RecordedEvent, RecordingManifest } from "../recorder/events.js";
+import { buildEditPlan, outputDurationMs, type EditPlan } from "../plan/edit-plan.js";
 
 export interface RenderOptions {
   manifest: RecordingManifest;
@@ -140,23 +141,40 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     }),
   });
 
+  // ── Edit plan: read from disk if persisted, else build inline ──────────
+  // The plan step writes <recording_dir>/edit-plan.json; if present, render
+  // uses it verbatim (lets the user inspect / edit it before render). If
+  // absent (e.g. tests, ad-hoc render path), build it from events + profile.
+  const editPlanFile = path.join(opts.recording_dir, "edit-plan.json");
+  let edit_plan: EditPlan;
+  if (await fileExists(editPlanFile)) {
+    edit_plan = await readJson<EditPlan>(editPlanFile);
+  } else {
+    edit_plan = buildEditPlan({
+      recording_id: opts.manifest.id,
+      manifest: opts.manifest,
+      events,
+      profile: opts.profile,
+    });
+    await fs.writeFile(editPlanFile, JSON.stringify(edit_plan, null, 2));
+  }
+
   const inputProps = {
     manifest: opts.manifest,
     events,
     cursor_samples,
     frames_url_prefix,
     profile: opts.profile,
+    edit_plan,
   };
 
   const compositionId = "polish";
   const [width, height] = opts.preset.dimensions;
   const fps = opts.preset.fps ?? opts.manifest.fps;
-  // Honor manifest.start_offset_ms — recorder-trimmed page-load period
-  // is excluded from the visible output.
-  const visibleRecordingMs =
-    opts.manifest.duration_ms - (opts.manifest.start_offset_ms ?? 0);
+  // Output duration comes from the edit plan: sum of segment durations
+  // divided by playback rate, plus outro if any.
+  const visibleRecordingMs = outputDurationMs(edit_plan.segments, edit_plan.playback_rate);
   const fullDurationMs = visibleRecordingMs + (opts.profile.outro.duration_ms ?? 0);
-  // Honor preset.duration_max_s — readme_hero gifs are capped at 6s, etc.
   const totalDurationMs =
     opts.preset.duration_max_s != null
       ? Math.min(fullDurationMs, opts.preset.duration_max_s * 1000)

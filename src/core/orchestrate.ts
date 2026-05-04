@@ -8,10 +8,11 @@ import fs from "node:fs/promises";
 import { renderPolished, type RenderResult } from "../compositor/render.js";
 import { loadPolishProfile } from "../config/load.js";
 import { buildPlan } from "../plan/generator.js";
+import { buildEditPlan, type EditPlan } from "../plan/edit-plan.js";
 import type { DemoPlan, PrincipleViolation } from "../plan/types.js";
 import { hasBlocking, validatePlan } from "../plan/validator.js";
 import { recordPlaywright } from "../recorder/playwright.js";
-import type { RecordingManifest } from "../recorder/events.js";
+import type { RecordedEvent, RecordingManifest } from "../recorder/events.js";
 import { ensureProjectDirs, kebab, recordingDir, timestampSlug } from "../utils/paths.js";
 import type { PolishProfile } from "./types.js";
 import { DEFAULT_POLISH_PROFILE } from "./defaults.js";
@@ -72,6 +73,60 @@ export async function orchestrateExecute(
     capture: captureProfile,
     paths,
   });
+}
+
+export interface PlanEditOrchestratorArgs {
+  recording_id: string;
+  rootDir?: string;
+  /**
+   * If true, regenerate edit-plan.json even when one already exists.
+   * Default false — once a plan is on disk it's authoritative so the
+   * user can hand-edit it without the next `plan` invocation clobbering.
+   */
+  force?: boolean;
+}
+
+export interface PlanEditOrchestratorResult {
+  recording_id: string;
+  edit_plan_path: string;
+  edit_plan: EditPlan;
+}
+
+/**
+ * Build (or rebuild) the edit-plan.json artifact for a recording.
+ * Idempotent: same events.json + same profile → byte-identical output.
+ * Sits between `record` and `export` in the pipeline.
+ */
+export async function orchestratePlanEdit(
+  args: PlanEditOrchestratorArgs,
+): Promise<PlanEditOrchestratorResult> {
+  const profile = await loadPolishProfile(args.rootDir);
+  const paths = await ensureProjectDirs(args.rootDir);
+  const dir = recordingDir(paths, args.recording_id);
+  const manifestPath = path.join(dir, "manifest.json");
+  const eventsPath = path.join(dir, "events.json");
+  const planPath = path.join(dir, "edit-plan.json");
+
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as RecordingManifest;
+  const events = JSON.parse(await fs.readFile(eventsPath, "utf8")) as RecordedEvent[];
+
+  if (!args.force) {
+    try {
+      const existing = JSON.parse(await fs.readFile(planPath, "utf8")) as EditPlan;
+      return { recording_id: args.recording_id, edit_plan_path: planPath, edit_plan: existing };
+    } catch {
+      // file doesn't exist or unreadable — proceed to build
+    }
+  }
+
+  const edit_plan = buildEditPlan({
+    recording_id: args.recording_id,
+    manifest,
+    events,
+    profile,
+  });
+  await fs.writeFile(planPath, JSON.stringify(edit_plan, null, 2));
+  return { recording_id: args.recording_id, edit_plan_path: planPath, edit_plan };
 }
 
 export interface ExportOrchestratorArgs {

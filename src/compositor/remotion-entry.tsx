@@ -37,6 +37,17 @@ const defaultProps = {
   cursor_samples: [],
   frames_url_prefix: "",
   profile: DEFAULT_POLISH_PROFILE,
+  edit_plan: {
+    schema_version: 1,
+    recording_id: "placeholder",
+    playback_rate: 1,
+    viewport: { width: 1280, height: 800 },
+    segments: [{ src_start_ms: 0, src_end_ms: 5000 }],
+    keyframes: [
+      { out_t_ms: 0, zoom: 1, focal_x: 0.5, focal_y: 0.5, ease: "linear" as const },
+      { out_t_ms: 5000, zoom: 1, focal_x: 0.5, focal_y: 0.5, ease: "linear" as const },
+    ],
+  },
 } satisfies CompositionProps;
 
 const Root: React.FC = () => {

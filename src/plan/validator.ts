@@ -32,10 +32,10 @@ export function validatePlan(plan: DemoPlan, profile: PolishProfile): PrincipleV
     const between = plan.steps
       .slice(prev.i, cur.i)
       .reduce((a, s) => a + s.expected_duration_ms, 0);
-    if (between < profile.auto_zoom.skip_if_within_ms) {
+    if (between < profile.zoom.skip_if_within_ms) {
       violations.push({
         principle: "exaggeration_restraint",
-        message: `Two zoom-eligible clicks within ${profile.auto_zoom.skip_if_within_ms}ms (steps ${prev.i} and ${cur.i}). Add no_zoom to one or insert a wait step.`,
+        message: `Two zoom-eligible clicks within ${profile.zoom.skip_if_within_ms}ms (steps ${prev.i} and ${cur.i}). Add no_zoom to one or insert a wait step.`,
         step_index: cur.i,
         severity: "warn",
       });

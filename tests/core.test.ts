@@ -3,7 +3,15 @@ import { DEFAULT_POLISH_PROFILE, parsePolishProfile } from "../src/core/index.js
 import { applyEase } from "../src/utils/easings.js";
 import { resolveSpringTrajectory, stepSpring } from "../src/utils/springs.js";
 import { buildPlan, validatePlan, hasBlocking } from "../src/plan/index.js";
-import { resolveZoomEnvelopes, zoomStateAt } from "../src/compositor/auto-zoom.js";
+import {
+  buildEditPlan,
+  computeSegments,
+  computeKeyframes,
+  applyConnectedPan,
+  outToSrc,
+  srcToOut,
+  outputDurationMs,
+} from "../src/plan/edit-plan.js";
 import { suggestZooms } from "../src/compositor/zoom-suggestions.js";
 import { injectArcWaypoints } from "../src/utils/springs.js";
 import { renderInitTemplate } from "../src/config/init-template.js";
@@ -28,11 +36,11 @@ describe("polish profile schema", () => {
     ).toThrow(/timing_and_spacing/);
   });
 
-  it("rejects max_scale_per_video > 1.6 (principle 8 restraint)", () => {
+  it("rejects zoom.max_peak > 1.6 (principle 8 restraint)", () => {
     expect(() =>
       parsePolishProfile({
         ...DEFAULT_POLISH_PROFILE,
-        auto_zoom: { ...DEFAULT_POLISH_PROFILE.auto_zoom, max_scale_per_video: 2.0 },
+        zoom: { ...DEFAULT_POLISH_PROFILE.zoom, max_peak: 2.0 },
       }),
     ).toThrow(/restraint/);
   });
@@ -222,86 +230,280 @@ describe("cursor sampling routing (recorder design)", () => {
   });
 });
 
-describe("auto-zoom resolver (principle 8 restraint)", () => {
-  it("suppresses second zoom within skip_if_within_ms", () => {
-    const events = [
-      { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
-      { kind: "click" as const, t_ms: 1300, x: 200, y: 200 },
+describe("edit-plan: segment computation rules (Steel.dev pattern)", () => {
+  // The planner trims dead time around salient events. Each event spawns
+  // a window [t-lead, t+trail]; close windows merge; large gaps split.
+  const profile = DEFAULT_POLISH_PROFILE;
+  const REC = 10000;
+
+  it("creates one segment per isolated salient event", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 100, y: 100, step_index: 0 },
     ];
-    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom);
-    // Second click is within 800ms — should be suppressed
-    expect(env.length).toBe(1);
+    const segs = computeSegments(events, REC, profile);
+    expect(segs.length).toBe(1);
+    expect(segs[0]?.src_start_ms).toBe(5000 - profile.playback.segment_lead_ms);
+    expect(segs[0]?.src_end_ms).toBe(5000 + profile.playback.segment_trail_ms);
   });
 
-  it("merges close-in-time clicks into a single connected-pan envelope", () => {
-    // Two clicks 2s apart — with default 700ms hold + 400ms out, the gap
-    // between envelope-end and next click is ~900ms < CHAINED_GAP_MS (1350).
-    // Connected-pan kicks in: ONE envelope with TWO sub-clicks.
-    const events = [
-      { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
-      { kind: "click" as const, t_ms: 3000, x: 200, y: 200 },
+  it("merges two close salient events into one segment", () => {
+    // 1500ms apart → gap ~0ms after lead/trail → merges
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 100, y: 100, step_index: 0 },
+      { kind: "click", t_ms: 6500, x: 200, y: 200, step_index: 1 },
     ];
-    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom);
-    expect(env.length).toBe(1);
-    expect(env[0]?.sub_clicks.length).toBe(2);
+    const segs = computeSegments(events, REC, profile);
+    expect(segs.length).toBe(1);
+    expect(segs[0]?.src_start_ms).toBe(4500);
+    expect(segs[0]?.src_end_ms).toBe(8000);
   });
 
-  it("splits zooms that are far apart into separate envelopes", () => {
-    // Click A at t=1000, envelope ends ~2100, recover ends ~2350. Click B
-    // at t=5000 leaves a gap of 2900ms, well past CHAINED_GAP_MS — separate.
-    const events = [
-      { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
-      { kind: "click" as const, t_ms: 5000, x: 200, y: 200 },
+  it("keeps two salient events with a large gap as separate segments", () => {
+    // 6000ms apart → gap ~4000ms (above merge_below_ms 2000) → split
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 1000, x: 100, y: 100, step_index: 0 },
+      { kind: "click", t_ms: 7000, x: 200, y: 200, step_index: 1 },
     ];
-    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom);
-    expect(env.length).toBe(2);
-    expect(env[0]?.sub_clicks.length).toBe(1);
-    expect(env[1]?.sub_clicks.length).toBe(1);
+    const segs = computeSegments(events, REC, profile);
+    expect(segs.length).toBe(2);
   });
 
-  it("respects no_zoom flag on event", () => {
-    const events = [
-      { kind: "click" as const, t_ms: 1000, x: 100, y: 100, no_zoom: true },
+  it("ignores events without step_index (page-emitted, not plan-driven)", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 100, y: 100 }, // no step_index
     ];
-    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom);
-    expect(env.length).toBe(0);
+    const segs = computeSegments(events, REC, profile);
+    // Falls through to "no salient events" → whole recording as one segment.
+    expect(segs.length).toBe(1);
+    expect(segs[0]?.src_start_ms).toBe(0);
+    expect(segs[0]?.src_end_ms).toBe(REC);
   });
 
-  it("returns inactive zoom state outside any envelope", () => {
-    const env = resolveZoomEnvelopes(
-      [{ kind: "click" as const, t_ms: 1000, x: 100, y: 100 }],
-      DEFAULT_POLISH_PROFILE.auto_zoom,
+  it("clamps segments to recording bounds", () => {
+    // Event near start: lead would push start_ms negative.
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 100, x: 0, y: 0, step_index: 0 },
+    ];
+    const segs = computeSegments(events, REC, profile);
+    expect(segs[0]?.src_start_ms).toBe(0);
+  });
+
+  it("handles type/scroll/hover as salient too", () => {
+    const events: RecordedEvent[] = [
+      { kind: "type", t_ms: 2000, x: 100, y: 50, step_index: 0 },
+      { kind: "scroll", t_ms: 5000, x: 200, y: 200, step_index: 1 },
+      { kind: "hover", t_ms: 8000, x: 300, y: 300, step_index: 2 },
+    ];
+    const segs = computeSegments(events, REC, profile);
+    expect(segs.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("edit-plan: action-type keyframes + connected-pan", () => {
+  const profile = DEFAULT_POLISH_PROFILE;
+  const viewport = { width: 1280, height: 800 };
+
+  it("emits a 4-keyframe envelope around a click event", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 640, y: 400, step_index: 0 },
+    ];
+    const segs = computeSegments(events, 10000, profile);
+    const kf = computeKeyframes(events, segs, profile, viewport);
+    // Expect: anchor wide @ 0, wide pre-zoom, peak in, peak hold, wide post,
+    // anchor wide @ end → 6 keyframes (some may dedupe at exact times).
+    expect(kf.length).toBeGreaterThanOrEqual(5);
+    const peaks = kf.filter((k) => k.zoom > 1);
+    expect(peaks.length).toBe(2); // peak_in + peak_out
+  });
+
+  it("uses peak=2.0 for type events (highest zoom)", () => {
+    const events: RecordedEvent[] = [
+      { kind: "type", t_ms: 5000, x: 640, y: 400, step_index: 0 },
+    ];
+    const segs = computeSegments(events, 10000, profile);
+    const kf = computeKeyframes(events, segs, profile, viewport);
+    const maxPeak = Math.max(...kf.map((k) => k.zoom));
+    // Default type peak = 2.0, but max_peak clamps to 1.6.
+    expect(maxPeak).toBeCloseTo(profile.zoom.max_peak, 2);
+  });
+
+  it("does not emit zoom keyframes for navigate/scroll (peak 1.0)", () => {
+    const events: RecordedEvent[] = [
+      { kind: "navigate", t_ms: 5000, target: "https://x.com", step_index: 0 },
+      { kind: "scroll", t_ms: 6000, x: 100, y: 100, step_index: 1 },
+    ];
+    const segs = computeSegments(events, 10000, profile);
+    const kf = computeKeyframes(events, segs, profile, viewport);
+    // Only the wide-anchor keyframes at t=0 and t=output_end.
+    const peaks = kf.filter((k) => k.zoom > 1);
+    expect(peaks.length).toBe(0);
+  });
+
+  it("respects no_zoom flag — skips keyframe envelope for that event", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 640, y: 400, step_index: 0, no_zoom: true },
+    ];
+    const segs = computeSegments(events, 10000, profile);
+    const kf = computeKeyframes(events, segs, profile, viewport);
+    const peaks = kf.filter((k) => k.zoom > 1);
+    expect(peaks.length).toBe(0);
+  });
+
+  it("clamps focal into the coverage-safe window at peak zoom", () => {
+    // Click at viewport corner (0, 0) — would force focal to negative
+    // territory; clamp pulls it to [margin, 1-margin].
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 0, y: 0, step_index: 0 },
+    ];
+    const segs = computeSegments(events, 10000, profile);
+    const kf = computeKeyframes(events, segs, profile, viewport);
+    const peak = kf.find((k) => k.zoom > 1);
+    expect(peak).toBeDefined();
+    if (!peak) return;
+    const margin = 1 / (2 * peak.zoom);
+    expect(peak.focal_x).toBeGreaterThanOrEqual(margin - 0.0001);
+    expect(peak.focal_y).toBeGreaterThanOrEqual(margin - 0.0001);
+  });
+
+  it("connected-pan collapses adjacent zoom envelopes within connected_gap_ms", () => {
+    // Click A at t=2000, click B at t=4000. Segments merge into one
+    // window [1500, 5500]. In OUTPUT time:
+    //   peak_out A @ 1200, post A @ 1600, pre B @ 1900, peak_in B @ 2500.
+    // Gap post→pre = 300ms < connected_gap_ms (1350) → connected-pan
+    // drops the dip pair (post_A + pre_B), keeping zoom at peak across
+    // the bridge.
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 2000, x: 100, y: 100, step_index: 0 },
+      { kind: "click", t_ms: 4000, x: 1100, y: 700, step_index: 1 },
+    ];
+    const segs = computeSegments(events, 10000, profile);
+    const kfRaw = computeKeyframes(events, segs, profile, viewport);
+    const kfPan = applyConnectedPan(kfRaw, profile);
+    expect(kfPan.length).toBe(kfRaw.length - 1);
+    // The bridge keyframe inserted at the original post_A time should be
+    // at peak zoom (sustained across the pan).
+    const bridgeIdx = kfPan.findIndex(
+      (k) => Math.abs(k.out_t_ms - 1600) < 0.5 && k.zoom > 1,
     );
-    const state = zoomStateAt(0, env, DEFAULT_POLISH_PROFILE.auto_zoom);
-    expect(state.active).toBe(false);
-    expect(state.current_scale).toBe(1.0);
+    expect(bridgeIdx).toBeGreaterThan(-1);
+  });
+});
+
+describe("edit-plan: src↔out time mapping", () => {
+  it("srcToOut returns null for times in dropped gaps", () => {
+    const segments = [
+      { src_start_ms: 1000, src_end_ms: 2000 },
+      { src_start_ms: 5000, src_end_ms: 6000 },
+    ];
+    expect(srcToOut(500, segments, 1)).toBeNull();
+    expect(srcToOut(3000, segments, 1)).toBeNull();
+    expect(srcToOut(7000, segments, 1)).toBeNull();
   });
 
-  it("returns peak scale during hold phase (matches profile.auto_zoom.scale)", () => {
-    const env = resolveZoomEnvelopes(
-      [{ kind: "click" as const, t_ms: 1000, x: 100, y: 100 }],
-      DEFAULT_POLISH_PROFILE.auto_zoom,
-    );
-    // Use a t_ms after peak (which equals click time) but before out_start.
-    const state = zoomStateAt(1300, env, DEFAULT_POLISH_PROFILE.auto_zoom);
-    expect(state.active).toBe(true);
-    expect(state.current_scale).toBeCloseTo(DEFAULT_POLISH_PROFILE.auto_zoom.scale, 2);
+  it("srcToOut respects playback_rate", () => {
+    const segments = [{ src_start_ms: 0, src_end_ms: 4000 }];
+    expect(srcToOut(2000, segments, 1)).toBe(2000);
+    expect(srcToOut(2000, segments, 4)).toBe(500);
   });
 
-  it("clamps the focal to the geometrically achievable window", () => {
-    // Click at viewport (50, 100) on 1280x800 = normalized (0.039, 0.125).
-    // At scale 1.4, focal bounds are [1/(2*1.4), 1-1/(2.8)] = [0.357, 0.643].
-    // The clamped focal should be (0.357, 0.357) — pinned at the corner of
-    // the achievable window.
-    const env = resolveZoomEnvelopes(
-      [{ kind: "click" as const, t_ms: 1000, x: 50, y: 100 }],
-      DEFAULT_POLISH_PROFILE.auto_zoom,
-      { viewport_width: 1280, viewport_height: 800 },
-    );
-    const sub = env[0]?.sub_clicks[0];
-    expect(sub).toBeDefined();
-    expect(sub?.focal_x).toBeCloseTo(1 / (2 * 1.4), 3);
-    expect(sub?.focal_y).toBeCloseTo(1 / (2 * 1.4), 3);
+  it("srcToOut accumulates across multiple segments", () => {
+    const segments = [
+      { src_start_ms: 1000, src_end_ms: 2000 }, // 1000ms
+      { src_start_ms: 5000, src_end_ms: 6000 }, // 1000ms
+    ];
+    expect(srcToOut(1500, segments, 1)).toBe(500);
+    expect(srcToOut(5500, segments, 1)).toBe(1500);
+  });
+
+  it("outToSrc is the inverse of srcToOut at strictly-interior points", () => {
+    // Boundary points (exact src_end of one seg vs src_start of next) are
+    // ambiguous in the inverse direction because both map to the same
+    // output time. We test interior points where the mapping is bijective.
+    const segments = [
+      { src_start_ms: 1000, src_end_ms: 2000 },
+      { src_start_ms: 5000, src_end_ms: 6000 },
+    ];
+    for (const src of [1100, 1500, 1900, 5100, 5500, 5900]) {
+      const out = srcToOut(src, segments, 1);
+      expect(out).not.toBeNull();
+      if (out == null) continue;
+      expect(outToSrc(out, segments, 1)).toBeCloseTo(src, 3);
+    }
+  });
+
+  it("outputDurationMs is sum of segment durations divided by rate", () => {
+    const segments = [
+      { src_start_ms: 1000, src_end_ms: 2000 },
+      { src_start_ms: 5000, src_end_ms: 6000 },
+    ];
+    expect(outputDurationMs(segments, 1)).toBe(2000);
+    expect(outputDurationMs(segments, 4)).toBe(500);
+  });
+});
+
+describe("edit-plan: end-to-end buildEditPlan", () => {
+  it("schema_version: 1; includes recording_id, viewport, segments, keyframes", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 640, y: 400, step_index: 0 },
+    ];
+    const manifest = {
+      id: "rec_123",
+      created_at: new Date().toISOString(),
+      duration_ms: 10000,
+      fps: 60,
+      viewport: { width: 1280, height: 800 },
+      device_pixel_ratio: 2,
+      frame_count: 600,
+      frame_indices: [],
+      frame_timestamps_ms: [],
+      start_offset_ms: 0,
+      frames_dir: "frames",
+      events_file: "events.json",
+      cursor_file: "cursor.json",
+      plan_file: "plan.json",
+      base_url: "https://example.com",
+    };
+    const plan = buildEditPlan({
+      recording_id: "rec_123",
+      manifest,
+      events,
+      profile: DEFAULT_POLISH_PROFILE,
+    });
+    expect(plan.schema_version).toBe(1);
+    expect(plan.recording_id).toBe("rec_123");
+    expect(plan.playback_rate).toBe(DEFAULT_POLISH_PROFILE.playback.rate);
+    expect(plan.viewport).toEqual({ width: 1280, height: 800 });
+    expect(plan.segments.length).toBeGreaterThan(0);
+    expect(plan.keyframes.length).toBeGreaterThan(0);
+    // First and last keyframes anchor wide.
+    expect(plan.keyframes[0]?.zoom).toBe(1);
+    expect(plan.keyframes[plan.keyframes.length - 1]?.zoom).toBe(1);
+  });
+
+  it("byte-identical plan for byte-identical inputs (deterministic)", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 640, y: 400, step_index: 0 },
+    ];
+    const manifest = {
+      id: "rec_x",
+      created_at: "2026-05-04T12:00:00.000Z",
+      duration_ms: 10000,
+      fps: 60,
+      viewport: { width: 1280, height: 800 },
+      device_pixel_ratio: 2,
+      frame_count: 600,
+      frame_indices: [],
+      frame_timestamps_ms: [],
+      start_offset_ms: 0,
+      frames_dir: "frames",
+      events_file: "events.json",
+      cursor_file: "cursor.json",
+      plan_file: "plan.json",
+      base_url: "https://example.com",
+    };
+    const a = buildEditPlan({ recording_id: "rec_x", manifest, events, profile: DEFAULT_POLISH_PROFILE });
+    const b = buildEditPlan({ recording_id: "rec_x", manifest, events, profile: DEFAULT_POLISH_PROFILE });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
 
@@ -381,15 +583,26 @@ describe("init-template drift protection", () => {
     expect(tpl).toMatch(/path_arc_amount:\s*0\.12/);
   });
 
-  it("auto_zoom asymmetric durations: 600 in / 400 out", () => {
+  it("zoom templates serialize click peak 1.5 with asymmetric durations", () => {
     const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/click:\s*\{[\s\S]*?peak:\s*1\.5/);
     expect(tpl).toMatch(/duration_in_ms:\s*600/);
     expect(tpl).toMatch(/duration_out_ms:\s*400/);
   });
 
-  it("scale 1.4 (not the earlier 1.25)", () => {
+  it("zoom template for type uses peak 2.0 (highest zoom)", () => {
     const tpl = renderInitTemplate();
-    expect(tpl).toMatch(/scale:\s*1\.4/);
+    expect(tpl).toMatch(/type:\s*\{[\s\S]*?peak:\s*2/);
+  });
+
+  it("playback rate defaults to 1.0 (realtime; opt-in to 4×)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/playback:\s*\{[\s\S]*?rate:\s*1/);
+  });
+
+  it("zoom max_peak: 1.6 (restraint cap)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/max_peak:\s*1\.6/);
   });
 
   it("includes contextual_swap (cursor sprite swap setting)", () => {
@@ -499,79 +712,10 @@ describe("zoom suggestions (Recordly-pattern engine)", () => {
   });
 });
 
-describe("connected-pan focal interpolation", () => {
-  // The auto-zoom resolver merges close-in-time clicks into a single envelope
-  // with multiple sub_clicks. zoomStateAt must interpolate the focal between
-  // sub_clicks during the bridge phase using the cubic-bezier(0.1, 0, 0.2, 1)
-  // ease — matches Recordly's connected-pan curve.
-
-  it("at peak of first sub-click, focal == first sub-click's focal", () => {
-    const events = [
-      { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
-      { kind: "click" as const, t_ms: 1800, x: 1100, y: 700 },
-    ];
-    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
-      viewport_width: 1280,
-      viewport_height: 800,
-    });
-    expect(env.length).toBe(1);
-    expect(env[0]?.sub_clicks.length).toBe(2);
-    const state = zoomStateAt(1000, env, DEFAULT_POLISH_PROFILE.auto_zoom);
-    expect(state.active).toBe(true);
-    const firstSub = env[0]?.sub_clicks[0];
-    expect(state.focal_x).toBeCloseTo(firstSub?.focal_x ?? 0, 3);
-    expect(state.focal_y).toBeCloseTo(firstSub?.focal_y ?? 0, 3);
-  });
-
-  it("at peak of last sub-click, focal == last sub-click's focal", () => {
-    const events = [
-      { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
-      { kind: "click" as const, t_ms: 1800, x: 1100, y: 700 },
-    ];
-    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
-      viewport_width: 1280,
-      viewport_height: 800,
-    });
-    const state = zoomStateAt(1800, env, DEFAULT_POLISH_PROFILE.auto_zoom);
-    const lastSub = env[0]?.sub_clicks[1];
-    expect(state.focal_x).toBeCloseTo(lastSub?.focal_x ?? 0, 3);
-    expect(state.focal_y).toBeCloseTo(lastSub?.focal_y ?? 0, 3);
-  });
-
-  it("focal HOLDS at sub-click for 500ms before panning to next", () => {
-    // Sub-click A at t=1000, B at t=2200.
-    // Hold ends at t=1500. Pan from 1500 to min(2200, 1500+600) = 2100.
-    // So at t=1400 (still in hold) focal_x should equal A's focal_x.
-    const events = [
-      { kind: "click" as const, t_ms: 1000, x: 200, y: 200 },
-      { kind: "click" as const, t_ms: 2200, x: 1000, y: 600 },
-    ];
-    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
-      viewport_width: 1280,
-      viewport_height: 800,
-    });
-    const f1000 = zoomStateAt(1000, env, DEFAULT_POLISH_PROFILE.auto_zoom);
-    const f1400 = zoomStateAt(1400, env, DEFAULT_POLISH_PROFILE.auto_zoom); // mid-hold
-    expect(f1400.focal_x).toBeCloseTo(f1000.focal_x, 5);
-  });
-
-  it("focal interpolates between sub-clicks during pan window (after hold)", () => {
-    const events = [
-      { kind: "click" as const, t_ms: 1000, x: 200, y: 200 },
-      { kind: "click" as const, t_ms: 2200, x: 1000, y: 600 },
-    ];
-    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
-      viewport_width: 1280,
-      viewport_height: 800,
-    });
-    const f1500 = zoomStateAt(1500, env, DEFAULT_POLISH_PROFILE.auto_zoom); // hold ends
-    const f1800 = zoomStateAt(1800, env, DEFAULT_POLISH_PROFILE.auto_zoom); // mid-pan
-    const f2100 = zoomStateAt(2100, env, DEFAULT_POLISH_PROFILE.auto_zoom); // pan ends
-    // Monotonic increase in x during the pan phase.
-    expect(f1800.focal_x).toBeGreaterThan(f1500.focal_x);
-    expect(f2100.focal_x).toBeGreaterThanOrEqual(f1800.focal_x);
-  });
-});
+// Obsolete: the connected-pan focal interpolation block tested the old
+// resolveZoomEnvelopes/zoomStateAt API. Connected-pan is now a post-pass
+// over keyframes (applyConnectedPan) and is covered in the edit-plan
+// describe blocks above.
 
 describe("contextual cursor swap (CSS-cursor → sprite kind)", () => {
   it("maps pointer/hand to pointer", () => {

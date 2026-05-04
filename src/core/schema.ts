@@ -75,27 +75,43 @@ const cursorSchema = z.object({
   path_arc_amount: z.number().min(0).max(0.5),
 });
 
-const autoZoomSchema = z.object({
-  trigger: z.enum(["click_event", "focus_change", "navigation", "manual"]),
-  scale: z.number().min(1).max(2.5),
+const zoomTemplateSchema = z.object({
+  peak: z.number().min(1.0).max(2.5),
   ease_in: easeSchema,
   ease_out: easeSchema,
-  duration_in_ms: z.number().min(100).max(2000),
-  duration_out_ms: z.number().min(100).max(2000),
-  hold_after_ms: z.number().min(0).max(3000),
-  skip_if_within_ms: z.number().min(0).max(3000),
+  duration_in_ms: z.number().min(0).max(2000),
+  hold_ms: z.number().min(0).max(3000),
+  duration_out_ms: z.number().min(0).max(2000),
+});
+
+const zoomSchema = z.object({
+  templates: z.object({
+    click: zoomTemplateSchema,
+    type: zoomTemplateSchema,
+    hover: zoomTemplateSchema,
+    scroll: zoomTemplateSchema,
+    navigate: zoomTemplateSchema,
+  }),
   pan_to_target: z.boolean(),
   cursor_recover_ms: z.number().min(0).max(1000),
-  max_scale_per_video: z
+  max_peak: z
     .number()
     .min(1)
     .max(2.5)
     .refine((v) => v <= 1.6, {
       message:
-        "principle 8 (exaggeration restraint): max_scale_per_video must be ≤ 1.6 in v1; higher reads cartoony",
+        "principle 8 (exaggeration restraint): max_peak must be ≤ 1.6 in v1; higher reads cartoony",
     }),
-  anticipation_drift_amount: z.number().min(0).max(0.2).optional(),
-  anticipation_drift_ms: z.number().min(0).max(500).optional(),
+  skip_if_within_ms: z.number().min(0).max(3000),
+  connected_gap_ms: z.number().min(0).max(5000),
+});
+
+const playbackSchema = z.object({
+  rate: z.number().min(0.25).max(8),
+  segment_lead_ms: z.number().min(0).max(2000),
+  segment_trail_ms: z.number().min(0).max(5000),
+  segment_merge_below_ms: z.number().min(0).max(10000),
+  segment_split_above_ms: z.number().min(0).max(15000),
 });
 
 const captionsSchema = z.object({
@@ -242,7 +258,8 @@ export const polishProfileSchema = z.object({
   brand: brandSchema,
   capture: captureSchema,
   cursor: cursorSchema,
-  auto_zoom: autoZoomSchema,
+  zoom: zoomSchema,
+  playback: playbackSchema,
   captions: captionsSchema,
   frame: frameSchema,
   background: backgroundSchema,

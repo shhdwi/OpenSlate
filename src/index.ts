@@ -10,7 +10,9 @@ export {
   type BrandKit,
   type CaptureProfile,
   type CursorProfile,
-  type AutoZoomProfile,
+  type ZoomProfile,
+  type ZoomTemplate,
+  type PlaybackProfile,
   type CaptionsProfile,
   type FrameProfile,
   type BackgroundProfile,
@@ -26,8 +28,23 @@ export {
   type FrameStyle,
   type BackgroundStyle,
   type CaptionsMode,
-  type AutoZoomTrigger,
 } from "./core/types.js";
+
+export type {
+  EditPlan,
+  Segment,
+  CameraKeyframe,
+} from "./plan/edit-plan.js";
+export {
+  buildEditPlan,
+  computeSegments,
+  computeKeyframes,
+  applyConnectedPan,
+  outToSrc,
+  srcToOut,
+  outputDurationMs,
+  summarizeEditPlan,
+} from "./plan/edit-plan.js";
 
 export { DEFAULT_POLISH_PROFILE } from "./core/defaults.js";
 export {

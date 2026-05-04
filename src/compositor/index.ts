@@ -1,5 +1,4 @@
 export * from "./composition.js";
-export * from "./auto-zoom.js";
 export {
   suggestZooms,
   type ZoomSuggestion,
