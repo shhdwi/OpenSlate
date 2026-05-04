@@ -126,48 +126,41 @@ const CursorIcon: React.FC<{ style: CursorProfile["style"]; size: number }> = ({
     );
   }
 
-  // Higher-fidelity macOS-style arrow.
+  // Cursor SVG — derived from Recordly's "Minimal Cursor.svg" (AGPL 3.0).
   //
-  // Path constructed from scratch (clean-room) to a calibrated silhouette:
-  //   - Tip at SVG origin (0, 0) so positioning the cursor div at (x%, y%)
-  //     lands the click point exactly at viewport (x, y).
-  //   - Tall narrow body (~24×33 design-units), wider at the wing-tail than
-  //     a basic triangle — feels like a real cursor, not a generic arrow.
-  //   - Black fill with white stroke gives high contrast on any background;
-  //     drop shadow pushes it forward of the recording.
-  //   - The design takes inspiration from Recordly's Minimal Cursor.svg
-  //     (AGPL) but is implemented independently and licensed Apache 2.0.
+  // ATTRIBUTION: This path data and shape come from Recordly's repository
+  // at https://github.com/webadderallorg/Recordly. See NOTICE.md at the
+  // openSlate repo root. We carry this asset in good faith for visual
+  // parity with Recordly's polish; license tension is documented openly.
   //
-  // Path breakdown:
-  //   M0 0          — tip
-  //   L20 14        — diagonal down-right along the body's right edge
-  //   L11.5 16      — inner notch where right wing meets the body
-  //   L16.5 28.5    — right wing tip (tail point)
-  //   L13 30        — bottom of right wing
-  //   L8 18         — diagonal up-left back across the body
-  //   L0 23         — left edge curving down (gives the body a slight curve)
-  //   Z             — close back to tip
-  //
-  // viewBox includes ~1px padding all around for the stroke.
-  const sw = Math.max(1.4, size * 0.075); // stroke width scales with size
+  // Geometry: SVG path tip is at (39.97, 31.88) in the source. We translate
+  // by (-39.97, -31.88) via the wrapping <g> so the tip lands at SVG (0, 0)
+  // — required by our positioning model where the cursor div's top-left
+  // corner sits at the click point.
   return (
     <svg
       width={size}
-      height={size * 1.18}
-      viewBox="-1.5 -1.5 24 33"
+      height={size}
+      // viewBox sized to fit the cursor body after the translate, with a
+      // small padding margin so the white stroke doesn't clip.
+      viewBox="-12 -12 340 360"
       style={{
         display: "block",
-        filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.45))",
+        filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.35))",
       }}
     >
-      <path
-        d="M0 0 L20 14 L11.5 16 L16.5 28.5 L13 30 L8 18 L0 23 Z"
-        fill="black"
-        stroke="white"
-        strokeWidth={sw}
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
+      <g transform="translate(-39.9744, -31.8759)">
+        <path
+          d="M39.9744 31.8759C38.2182 23.4825 47.2034 16.9545 54.6432 21.2183L351.11 191.127C358.653 195.45 357.401 206.692 349.09 209.248L205.199 253.511C202.971 254.196 201.054 255.643 199.785 257.599L127.77 368.534C122.94 375.973 111.523 373.84 109.707 365.158L39.9744 31.8759Z"
+          fill="#000000"
+        />
+        <path
+          d="M346.169 199.749L202.277 244.012C197.821 245.383 193.988 248.277 191.449 252.188L119.434 363.121L49.7012 29.8407L346.169 199.749Z"
+          stroke="white"
+          strokeWidth="19.8759"
+          fill="none"
+        />
+      </g>
     </svg>
   );
 };
