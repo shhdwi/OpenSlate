@@ -9,6 +9,10 @@ import { injectArcWaypoints } from "../src/utils/springs.js";
 import { renderInitTemplate } from "../src/config/init-template.js";
 import { dropDuplicateDomClicks, mapCssCursor } from "../src/recorder/playwright.js";
 import type { RecordedEvent } from "../src/recorder/events.js";
+import { SPRITE_INFO } from "../src/compositor/cursor-sprite-info.js";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 describe("polish profile schema", () => {
   it("default profile validates", () => {
@@ -709,5 +713,67 @@ describe("nav-click animation hold (synthetic-first click flow)", () => {
     dropDuplicateDomClicks(events);
     expect(events).toHaveLength(2);
     expect(events.every((e) => e.synthetic)).toBe(true);
+  });
+});
+
+describe("cursor sprite manifest <-> SVG geometry contract", () => {
+  // The cursor positioning bug ("cursor not on click target") came from
+  // applying Recordly's hotspot fractions to un-trimmed SVGs. The fix:
+  // each SVG is trimmed so its viewBox === content bbox (exactly), so the
+  // hotspot fractions apply directly to the rendered image. These tests
+  // enforce that contract: the manifest must match the SVG file, and the
+  // SVG file must be in trimmed form.
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const SPRITES_DIR = path.resolve(__dirname, "../src/compositor/cursor-sprites");
+
+  it("manifest covers exactly the 5 v1 cursor kinds", () => {
+    expect(Object.keys(SPRITE_INFO).sort()).toEqual([
+      "arrow",
+      "grab",
+      "not-allowed",
+      "pointer",
+      "text",
+    ]);
+  });
+
+  it("each manifest entry has hotspot in [0,1] and positive dimensions", () => {
+    for (const [kind, info] of Object.entries(SPRITE_INFO)) {
+      expect(info.width, `${kind} width`).toBeGreaterThan(0);
+      expect(info.height, `${kind} height`).toBeGreaterThan(0);
+      expect(info.hotspot.x, `${kind} hotspot.x`).toBeGreaterThanOrEqual(0);
+      expect(info.hotspot.x, `${kind} hotspot.x`).toBeLessThanOrEqual(1);
+      expect(info.hotspot.y, `${kind} hotspot.y`).toBeGreaterThanOrEqual(0);
+      expect(info.hotspot.y, `${kind} hotspot.y`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("each SVG file has a viewBox matching its manifest dimensions", async () => {
+    for (const [kind, info] of Object.entries(SPRITE_INFO)) {
+      const svg = await fs.readFile(path.join(SPRITES_DIR, `${kind}.svg`), "utf8");
+      const m = svg.match(/viewBox\s*=\s*"([^"]+)"/);
+      expect(m, `${kind}.svg has no viewBox`).toBeTruthy();
+      if (!m) continue;
+      const parts = m[1]!.split(/\s+/).map(Number);
+      const [, , vbW, vbH] = parts;
+      // Manifest dimensions must match SVG viewBox dimensions within
+      // sub-unit rounding. If they drift, the rendered cursor's hotspot
+      // is offset by (drift_factor * size) pixels — exactly the bug class
+      // this contract prevents.
+      expect(Math.abs((vbW ?? 0) - info.width), `${kind} viewBox width drift`).toBeLessThan(0.5);
+      expect(Math.abs((vbH ?? 0) - info.height), `${kind} viewBox height drift`).toBeLessThan(0.5);
+    }
+  });
+
+  it("each SVG file has no width/height attributes on the root <svg> (lets the renderer set them)", async () => {
+    for (const kind of Object.keys(SPRITE_INFO)) {
+      const svg = await fs.readFile(path.join(SPRITES_DIR, `${kind}.svg`), "utf8");
+      // Match the opening <svg ...> tag specifically; nested elements may
+      // legitimately have width/height (e.g., <rect>).
+      const opening = svg.match(/<svg\b[^>]*>/);
+      expect(opening, `${kind}.svg missing <svg> tag`).toBeTruthy();
+      if (!opening) continue;
+      expect(opening[0]).not.toMatch(/\swidth\s*=/);
+      expect(opening[0]).not.toMatch(/\sheight\s*=/);
+    }
   });
 });

@@ -28,6 +28,7 @@ import { staticFile } from "remotion";
 import type { CursorProfile } from "../core/types.js";
 import type { CursorKind, RecordedEvent } from "../recorder/events.js";
 import { applyEase } from "../utils/easings.js";
+import { SPRITE_INFO } from "./cursor-sprite-info.js";
 
 export interface CursorRenderProps {
   /** viewport-space x */
@@ -50,31 +51,18 @@ export interface CursorRenderProps {
 }
 
 /**
- * Per-sprite hotspot — the pixel that should land on the click point,
- * in 0..1 normalized to the source SVG bounds. Numbers come straight
- * from Recordly's filename convention: e.g. `pointer-1__34-24.svg`
- * → hotspot at (34/100, 24/100) of the trimmed sprite.
+ * Sprite geometry comes from the auto-generated SPRITE_INFO manifest
+ * (scripts/trim-cursor-sprites.ts). After trim, each sprite's viewBox
+ * IS the visible cursor's bounding box, so:
+ *   - the rendered <img>'s pixel space corresponds 1:1 to viewBox space
+ *   - the hotspot fraction (from Recordly's filename, e.g. `34-24` →
+ *     0.34, 0.24) applies directly: hotspot pixel = (hotspot.x * width,
+ *     hotspot.y * height)
+ *
+ * This is a single source of truth: regenerating the manifest from
+ * the trimmed SVGs is the only way to change either the geometry or
+ * the hotspot, eliminating the class of bugs where the two drift apart.
  */
-const SPRITE_HOTSPOTS: Record<CursorKind, { x: number; y: number }> = {
-  arrow: { x: 0.34, y: 0.24 },
-  pointer: { x: 0.39, y: 0.26 },
-  text: { x: 0.5, y: 0.5 },
-  grab: { x: 0.5, y: 0.5 },
-  "not-allowed": { x: 0.23, y: 0.0 },
-};
-
-/**
- * Per-sprite size scale — Recordly's macOS sprites have varying intrinsic
- * sizes. We normalize so all kinds visually match the arrow at the same
- * size_multiplier. Tuned by eye against the rendered output.
- */
-const SPRITE_SIZE_SCALE: Record<CursorKind, number> = {
-  arrow: 1.0,
-  pointer: 1.0,
-  text: 0.85,
-  grab: 1.0,
-  "not-allowed": 1.0,
-};
 
 /**
  * Cursor sway calibration.
@@ -144,9 +132,21 @@ export const Cursor: React.FC<CursorRenderProps> = ({
       )
     : 0;
 
-  // Default 28px arrow at size_multiplier=1; default profile is 1.25x → 35px.
+  // Look up the sprite's geometry from the auto-generated manifest. The
+  // post-trim viewBox is the cursor's exact bounding box, so width/height
+  // ratio drives the rendered <img>'s aspect — square-ish for arrow/hand,
+  // tall for the I-beam.
+  const spriteInfo = SPRITE_INFO[kind] ?? SPRITE_INFO.arrow;
+  const aspect = spriteInfo.width / spriteInfo.height;
+
+  // Default 28px is the cursor's LONGER side at size_multiplier=1; default
+  // profile is 2.5x → 70px. The longer side stays consistent across sprite
+  // kinds (so the I-beam and the arrow visually scale comparably) while
+  // the shorter side follows aspect ratio.
   const baseSize = 28;
-  const size = baseSize * profile.size_multiplier * (SPRITE_SIZE_SCALE[kind] ?? 1);
+  const longerSide = baseSize * profile.size_multiplier;
+  const renderedWidth = aspect >= 1 ? longerSide : longerSide * aspect;
+  const renderedHeight = aspect >= 1 ? longerSide / aspect : longerSide;
 
   // Position by percentage of the scene so cursor lands correctly regardless
   // of how the scene is scaled to fit the frame chrome.
@@ -164,13 +164,12 @@ export const Cursor: React.FC<CursorRenderProps> = ({
   // Only sway the arrow. Other sprites (hand, I-beam, grab) look wrong rotated.
   const swayDeg = kind === "arrow" ? leanSign * leanMag * speedFactor * SWAY_MAX_DEG : 0;
 
-  // The sprite hotspot is normalized 0..1 of the sprite bbox. We want the
-  // hotspot to land at (left_pct, top_pct), so we offset the inner sprite
-  // by -hotspot * size in pixels. Outer div is positioned via pct, inner
-  // <img> is offset by px so the hotspot anchor is exact.
-  const hotspot = SPRITE_HOTSPOTS[kind] ?? SPRITE_HOTSPOTS.arrow;
-  const offsetX = -hotspot.x * size;
-  const offsetY = -hotspot.y * size;
+  // Hotspot is a fraction of the rendered img — applied directly to the
+  // computed pixel dimensions. Because the SVG was trimmed to its content
+  // bbox, the rendered image == the visible cursor; no additional offset
+  // for empty viewBox space is needed (the failure mode of the prior bug).
+  const offsetX = -spriteInfo.hotspot.x * renderedWidth;
+  const offsetY = -spriteInfo.hotspot.y * renderedHeight;
 
   return (
     <div
@@ -193,7 +192,8 @@ export const Cursor: React.FC<CursorRenderProps> = ({
         style={profile.style}
         kind={kind}
         contextual_swap={profile.contextual_swap}
-        size={size}
+        width={renderedWidth}
+        height={renderedHeight}
         offsetX={offsetX}
         offsetY={offsetY}
       />
@@ -205,11 +205,16 @@ const CursorIcon: React.FC<{
   style: CursorProfile["style"];
   kind: CursorKind;
   contextual_swap: boolean;
-  size: number;
+  width: number;
+  height: number;
   offsetX: number;
   offsetY: number;
-}> = ({ style, kind, contextual_swap, size, offsetX, offsetY }) => {
+}> = ({ style, kind, contextual_swap, width, height, offsetX, offsetY }) => {
   if (style === "minimal_dot") {
+    // minimal_dot is a single shape independent of cursor kind; use the
+    // longer dimension as the dot diameter reference so it scales the
+    // same as a 1:1 sprite would.
+    const size = Math.max(width, height);
     return (
       <div
         style={{
@@ -239,14 +244,14 @@ const CursorIcon: React.FC<{
     <img
       src={staticFile(`cursors/${effectiveKind}.svg`)}
       alt=""
-      width={size}
-      height={size}
+      width={width}
+      height={height}
       style={{
         position: "absolute",
         left: offsetX,
         top: offsetY,
-        width: size,
-        height: size,
+        width,
+        height,
         display: "block",
         // Drop shadow gives the cursor weight against light/dark backgrounds
         // both — avoids the "floating sticker" look.
