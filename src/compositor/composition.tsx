@@ -186,15 +186,59 @@ export const PolishComposition: React.FC<CompositionProps> = ({
       ? relPath
       : staticFile(relPath);
 
-  // Cursor position for this output frame (already in output time + smoothed).
+  // Cursor position for this output frame (spring-smoothed in output time).
+  // BUT: when a click is active, override with the click event's exact x/y.
+  // The spring has lag — for fast cursor moves into a click target, the
+  // spring may be 20-40px short at the click moment. The click event is
+  // authoritative for "where the click happened", so we snap during the
+  // click window so the cursor visually lands ON the click target while
+  // the bounce + halo flourishes are firing. Outside the window the
+  // spring drives smoothly as before.
   const frameIndex = Math.min(cursorTrajectory.length - 1, frame);
-  const cur = cursorTrajectory[frameIndex] ?? {
+  const springCur = cursorTrajectory[frameIndex] ?? {
     x: 0,
     y: 0,
     vx: 0,
     vy: 0,
     speed_px_per_s: 0,
   };
+  // Find the most recent click whose snap window includes this frame.
+  // SNAP_LEAD_MS: how far before the click t to start blending in (so the
+  // cursor settles onto the target exactly as the click fires).
+  // SNAP_TAIL_MS: how long after the click to keep snapping (covers the
+  // bounce + halo so they always anchor pixel-perfect).
+  const SNAP_LEAD_MS = 200;
+  const SNAP_TAIL_MS = 1100; // = CLICK_FX_DELAY_MS (250) + bounce (260) + halo (700) - cushion
+  let cur: typeof springCur = springCur;
+  for (let i = visibleEvents.length - 1; i >= 0; i--) {
+    const ev = visibleEvents[i]!;
+    if (ev.kind !== "click") continue;
+    if (typeof ev.x !== "number" || typeof ev.y !== "number") continue;
+    const dt = out_t_ms - ev.t_ms;
+    if (dt < -SNAP_LEAD_MS || dt > SNAP_TAIL_MS) continue;
+    // Blend between spring and exact click point. During lead window blend
+    // FROM spring TO click; during tail window stay snapped, then ease back.
+    let snapWeight: number;
+    if (dt < 0) {
+      // Lead-in: 0 at -SNAP_LEAD_MS, 1 at 0
+      snapWeight = (dt + SNAP_LEAD_MS) / SNAP_LEAD_MS;
+    } else if (dt < SNAP_TAIL_MS - SNAP_LEAD_MS) {
+      // Hold: fully snapped
+      snapWeight = 1;
+    } else {
+      // Tail-out: 1 at (SNAP_TAIL_MS - SNAP_LEAD_MS), 0 at SNAP_TAIL_MS
+      snapWeight = 1 - (dt - (SNAP_TAIL_MS - SNAP_LEAD_MS)) / SNAP_LEAD_MS;
+    }
+    snapWeight = Math.max(0, Math.min(1, snapWeight));
+    cur = {
+      x: springCur.x + (ev.x - springCur.x) * snapWeight,
+      y: springCur.y + (ev.y - springCur.y) * snapWeight,
+      vx: springCur.vx * (1 - snapWeight),
+      vy: springCur.vy * (1 - snapWeight),
+      speed_px_per_s: springCur.speed_px_per_s * (1 - snapWeight),
+    };
+    break;
+  }
 
   const sceneTransform = `translate(${translatePctX}%, ${translatePctY}%) scale(${peakScale})`;
 

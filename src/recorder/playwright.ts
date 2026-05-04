@@ -558,13 +558,19 @@ async function executeStep(
         if (center) {
           // principle 4: anticipation — slow approach so cursor reads as decided.
           await page.mouse.move(center.x, center.y, { steps: 24 });
-          await safeWait(200);
+          // Spring-settle window: the cursor's spring smoothing has lag
+          // proportional to the inbound velocity. After mouse.move, give
+          // the spring ~500ms (≈3-4 spring time constants at our default
+          // stiffness) so it converges onto the target before the click
+          // fires. The compositor also snaps the cursor to the click x/y
+          // during the click window as a defense-in-depth, but a settled
+          // spring keeps the in-flight motion clean too.
+          await safeWait(500);
           // Emit a synthetic click ANCHORED to the source-page dwell — the
           // renderer keys click bounce + halo off this timestamp. Holding
           // the cursor steady for PRE_CLICK_DWELL_MS afterwards lets the
           // animation play against source-page frames before the real
-          // click triggers navigation. Without this, nav-clicks unmount
-          // the page mid-halo and the animation lands on the wrong page.
+          // click triggers navigation.
           emitInteraction("click", center.x, center.y);
           await safeWait(PRE_CLICK_DWELL_MS);
           await page.mouse.click(center.x, center.y);
@@ -575,11 +581,11 @@ async function executeStep(
         // selector not found; record but don't abort
       }
       // The DOM "click" listener also fires for the real mouse.click above
-      // and emits a duplicate (non-synthetic) click event. We dedupe in
-      // the post-pass (dropDuplicateDomClicks) by proximity to synthetics.
-      // Remaining hold is the "post-action read" budget on the new page.
+      // and emits a duplicate (non-synthetic) click event. dropDuplicateDomClicks
+      // removes those. Remaining hold is the "post-action read" budget on
+      // the new page.
       await safeWait(
-        Math.max(0, step.expected_duration_ms - 200 - PRE_CLICK_DWELL_MS - 50),
+        Math.max(0, step.expected_duration_ms - 500 - PRE_CLICK_DWELL_MS - 50),
       );
       break;
     }
