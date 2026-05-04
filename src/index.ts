@@ -67,6 +67,7 @@ export type { RecordedEvent, RecordingManifest, CursorSample } from "./recorder/
 export {
   orchestratePlan,
   orchestrateExecute,
+  orchestratePlanEdit,
   orchestrateExport,
 } from "./core/orchestrate.js";
 
