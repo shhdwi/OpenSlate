@@ -32,7 +32,9 @@ import { Background } from "./background.js";
 import { Captions } from "./captions.js";
 import { Cursor } from "./cursor.js";
 import { Frame } from "./frame.js";
+import { Stage } from "./stage.js";
 import { Flourishes } from "../flourishes/index.js";
+import { ClickHighlight } from "../flourishes/click-highlight.js";
 
 export interface CompositionProps {
   manifest: RecordingManifest;
@@ -243,19 +245,12 @@ export const PolishComposition: React.FC<CompositionProps> = ({
         parallax_y={bgParallaxY}
       />
 
-      {/* L2 + L3 + L4 + L5: Frame chrome wrapping a single SCENE group that
-          contains the recording AND the cursor in shared viewport coords.
-          The scene group has the SAME aspect ratio as the recording so
-          cursor % positioning maps directly to recording pixels — no
-          letterbox-induced drift. Frame's content area centers the scene
-          via flex; any extra space on the sides shows the chromeBg.
-          Auto-zoom transforms the whole group, so cursor stays glued to
-          the right pixel of the recording during zoom. */}
+      {/* L2 + L3 + L4 + L5: Frame chrome wrapping a Stage that contains
+          the recording, cursor, AND click-positioned flourishes (halo,
+          arrow callout, etc) — all in shared viewport coordinate space.
+          See compositor/stage.tsx for the architectural invariant. */}
       <Frame profile={profile.frame} layout={profile.layout} brand={profile.brand}>
         <div
-          // Outer flex centerer — fills the frame's content area, centers
-          // the scene group horizontally and vertically. Lets the scene
-          // group take its aspect-determined size.
           style={{
             position: "absolute",
             inset: 0,
@@ -264,37 +259,20 @@ export const PolishComposition: React.FC<CompositionProps> = ({
             justifyContent: "center",
           }}
         >
-          <div
-            style={{
-              // Scene group has recording's aspect ratio. With this, the
-              // cursor at left:50% top:50% lines up with the recording's
-              // center pixel — no letterbox drift.
-              aspectRatio: `${viewport_w} / ${viewport_h}`,
-              // Take all available height; width auto-sized by aspect ratio.
-              // If frame content is wider than recording aspect, this
-              // height-bounds the scene; horizontal margin shows chromeBg.
-              height: "100%",
-              maxWidth: "100%",
-              position: "relative",
-              transform: sceneTransform,
-              transformOrigin: "0 0",
-              willChange: "transform",
-              overflow: "hidden",
-            }}
+          <Stage
+            viewport_width={viewport_w}
+            viewport_height={viewport_h}
+            transform={sceneTransform}
           >
             <Img
               src={sourceFrameUrl}
               style={{
                 width: "100%",
                 height: "100%",
-                // Now that scene group matches recording aspect, cover/fill
-                // both work the same — recording occupies 100% of scene
-                // with no letterbox.
                 objectFit: "fill",
                 display: "block",
               }}
             />
-            {/* Cursor at % of scene group, which equals % of recording. */}
             <Cursor
               x={cur.x}
               y={cur.y}
@@ -307,7 +285,20 @@ export const PolishComposition: React.FC<CompositionProps> = ({
               t_ms={t_ms}
               profile={profile.cursor}
             />
-          </div>
+            {/* Click highlight is in-stage so it tracks the recording
+                under any frame size or zoom transform. */}
+            <ClickHighlight
+              config={profile.flourishes.click_highlight}
+              ctx={{
+                brand: profile.brand,
+                events: visibleEvents,
+                t_ms,
+                total_duration_ms: visible_duration_ms,
+              }}
+              viewport_width={viewport_w}
+              viewport_height={viewport_h}
+            />
+          </Stage>
         </div>
       </Frame>
 
