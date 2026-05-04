@@ -26,20 +26,33 @@ export const OutroLogoReveal: React.FC<OutroLogoRevealProps> = ({ config, ctx })
 
   const local_t = Math.max(0, Math.min(1, (ctx.t_ms - start) / config.duration_ms));
 
-  const wordmark =
-    config.use_brand_logo && ctx.brand.logo
-      ? null // future: render from path; v1 falls through to text wordmark
-      : ctx.brand.font; // v1: use the font name as the wordmark glyph
+  // v1: text wordmark sources from a few possible places, in priority order.
+  // v1.5 will support rendering the SVG/PNG logo from `brand.logo` directly.
+  // If none is available, skip the wordmark variants entirely (don't render
+  // the font name — that was a bug that surfaced as "Inter" on default
+  // configs without a brand wordmark).
+  const wordmark = pickWordmark(ctx);
 
   switch (config.style) {
     case "wordmark_lift":
-      return <WordmarkLift t={local_t} brand={ctx.brand} text={wordmark ?? "openSlate"} />;
+      if (!wordmark) return null;
+      return <WordmarkLift t={local_t} brand={ctx.brand} text={wordmark} />;
     case "wordmark_blur_in":
-      return <WordmarkBlurIn t={local_t} brand={ctx.brand} text={wordmark ?? "openSlate"} />;
+      if (!wordmark) return null;
+      return <WordmarkBlurIn t={local_t} brand={ctx.brand} text={wordmark} />;
     case "symbol_orbit":
       return <SymbolOrbit t={local_t} brand={ctx.brand} />;
   }
 };
+
+function pickWordmark(ctx: FlourishContext): string | null {
+  // Future: parse brand.logo as inline SVG path, render at scale.
+  // For now the wordmark text comes from an explicit brand.name field if
+  // the project sets one; falls back to null (skip rendering).
+  const brand = ctx.brand as typeof ctx.brand & { name?: string };
+  if (typeof brand.name === "string" && brand.name.length > 0) return brand.name;
+  return null;
+}
 
 const WordmarkLift: React.FC<{ t: number; brand: FlourishContext["brand"]; text: string }> = ({
   t,

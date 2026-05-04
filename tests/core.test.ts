@@ -4,6 +4,8 @@ import { applyEase } from "../src/utils/easings.js";
 import { resolveSpringTrajectory, stepSpring } from "../src/utils/springs.js";
 import { buildPlan, validatePlan, hasBlocking } from "../src/plan/index.js";
 import { resolveZoomEnvelopes, zoomStateAt } from "../src/compositor/auto-zoom.js";
+import { suggestZooms } from "../src/compositor/zoom-suggestions.js";
+import { injectArcWaypoints } from "../src/utils/springs.js";
 
 describe("polish profile schema", () => {
   it("default profile validates", () => {
@@ -293,5 +295,75 @@ describe("auto-zoom resolver (principle 8 restraint)", () => {
     expect(sub).toBeDefined();
     expect(sub?.focal_x).toBeCloseTo(1 / (2 * 1.4), 3);
     expect(sub?.focal_y).toBeCloseTo(1 / (2 * 1.4), 3);
+  });
+});
+
+describe("cursor arcs (principle 5)", () => {
+  it("injects midpoint with upward y for long traversals", () => {
+    const arc = injectArcWaypoints(
+      [
+        { t_ms: 0, x: 0, y: 0 },
+        { t_ms: 1000, x: 1000, y: 0 },
+      ],
+      0.15,
+    );
+    expect(arc.length).toBe(3);
+    const mid = arc[1]!;
+    expect(mid.t_ms).toBe(500);
+    expect(mid.x).toBe(500);
+    expect(mid.y).toBeLessThan(0); // y is lifted upward
+  });
+
+  it("does NOT inject for short traversals", () => {
+    const arc = injectArcWaypoints(
+      [
+        { t_ms: 0, x: 0, y: 0 },
+        { t_ms: 1000, x: 50, y: 0 },
+      ],
+      0.15,
+    );
+    expect(arc.length).toBe(2);
+  });
+
+  it("arc_amount = 0 disables injection", () => {
+    const arc = injectArcWaypoints(
+      [
+        { t_ms: 0, x: 0, y: 0 },
+        { t_ms: 1000, x: 1000, y: 0 },
+      ],
+      0,
+    );
+    expect(arc.length).toBe(2);
+  });
+});
+
+describe("zoom suggestions (Recordly-pattern engine)", () => {
+  it("suggests one click cluster from a single click", () => {
+    const events = [{ kind: "click" as const, t_ms: 1000, x: 200, y: 300 }];
+    const out = suggestZooms(events, [], { viewport_width: 1280, viewport_height: 800 });
+    expect(out.length).toBe(1);
+    expect(out[0]?.source).toBe("click");
+    expect(out[0]?.focal_x).toBeCloseTo(200 / 1280, 4);
+  });
+
+  it("merges close-in-time clicks into a single cluster", () => {
+    const events = [
+      { kind: "click" as const, t_ms: 1000, x: 200, y: 300 },
+      { kind: "click" as const, t_ms: 2000, x: 220, y: 320 },
+    ];
+    const out = suggestZooms(events, [], { viewport_width: 1280, viewport_height: 800 });
+    expect(out.length).toBe(1);
+    expect(out[0]?.source).toBe("click_cluster");
+    expect(out[0]?.source_event_indices.length).toBe(2);
+  });
+
+  it("filters out suggestions below min_strength", () => {
+    const events = [{ kind: "click" as const, t_ms: 1000, x: 200, y: 300 }];
+    const out = suggestZooms(events, [], {
+      viewport_width: 1280,
+      viewport_height: 800,
+      min_strength: 0.99,
+    });
+    expect(out.length).toBe(0);
   });
 });

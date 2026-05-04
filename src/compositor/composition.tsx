@@ -130,9 +130,51 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   const viewport_w = manifest.viewport.width;
   const viewport_h = manifest.viewport.height;
 
-  // Focal is already clamped in zoomStateAt; just consume.
-  const focalPctX = zoom.focal_x;
-  const focalPctY = zoom.focal_y;
+  // Focal — initial value from zoom state; cursor-follow may revise after
+  // the cursor trajectory is resolved (see below). translate/parallax
+  // calcs happen AFTER the cursor-follow update so they consume the
+  // final focal value.
+  let focalPctX = zoom.focal_x;
+  let focalPctY = zoom.focal_y;
+
+  // Cursor position for this frame (spring-smoothed, in viewport coords).
+  const frameIndex = Math.min(cursorTrajectory.length - 1, frame);
+  const cur = cursorTrajectory[frameIndex] ?? {
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    speed_px_per_s: 0,
+  };
+
+  // ── Cursor-follow camera (Recordly's cursorFollowCamera pattern). ─────
+  // During the HOLD phase of an active zoom (and only when the envelope
+  // has a single sub-click — i.e., NOT during a connected-pan transition,
+  // which already has its own focal interpolation), nudge the focal
+  // toward the live cursor position. Makes long pauses inside a zoom
+  // feel responsive instead of static.
+  const FOLLOW_RATIO = 0.35;
+  const isHoldPhase =
+    zoom.active &&
+    zoom.envelope !== null &&
+    t_ms > zoom.envelope.peak_ms &&
+    zoom.envelope.sub_clicks.length === 1 &&
+    progress === 1 &&
+    cur.x !== 0 &&
+    cur.y !== 0;
+  if (isHoldPhase) {
+    const targetFx = cur.x / viewport_w;
+    const targetFy = cur.y / viewport_h;
+    const cursorFollowFx = lerp(zoom.focal_x, targetFx, FOLLOW_RATIO);
+    const cursorFollowFy = lerp(zoom.focal_y, targetFy, FOLLOW_RATIO);
+    // Re-clamp the followed focal so it stays within the bounds where the
+    // recording covers the frame at the current scale.
+    const margin = 1 / (2 * profile.auto_zoom.scale);
+    focalPctX = clamp(cursorFollowFx, margin, 1 - margin);
+    focalPctY = clamp(cursorFollowFy, margin, 1 - margin);
+  }
+
+  // Now compute camera transform from the (possibly cursor-follow-adjusted) focal.
   const translatePctX = profile.auto_zoom.pan_to_target
     ? (0.5 - focalPctX * peakScale) * 100 * progress
     : 0;
@@ -147,16 +189,6 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   const bgParallaxY = zoom.active
     ? -(focalPctY - 0.5) * viewport_h * profile.background.parallax_factor * (easedScale - 1)
     : 0;
-
-  // Cursor position for this frame (spring-smoothed, in viewport coords).
-  const frameIndex = Math.min(cursorTrajectory.length - 1, frame);
-  const cur = cursorTrajectory[frameIndex] ?? {
-    x: 0,
-    y: 0,
-    vx: 0,
-    vy: 0,
-    speed_px_per_s: 0,
-  };
 
   // Map output time → source frame using actual recording timestamps.
   // CDP screencast is delta-emitted (no frame on static pages), so a
@@ -279,6 +311,10 @@ export const PolishComposition: React.FC<CompositionProps> = ({
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
 }
 
 const OutroFade: React.FC<{ profile: PolishProfile }> = ({ profile }) => {
