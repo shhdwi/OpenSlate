@@ -226,6 +226,11 @@ export const Frame: React.FC<FrameProps> = ({ profile, layout, brand, children }
             // so light theme = white-ish, dark theme = dark grey, blending with
             // most web app backgrounds.
             background: chromeBg,
+            // Defense-in-depth: scene group inside has its own overflow:hidden,
+            // but adding it here too ensures that even if a transform somehow
+            // bleeds past the scene group's CSS bounds, the chrome bar above
+            // this div stays unobscured.
+            overflow: "hidden",
           }}
         >
           {children}

@@ -110,7 +110,12 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
   },
 
   intro: { duration_ms: 0 }, // respect viewer's scroll thumb
-  outro: { duration_ms: 800, style: "fade_to_brand", show_logo: false },
+  // Outro fade is OFF by default — user feedback: end-blur reads as "the
+  // video is done buffering" not "the demo ended cleanly." Hard-cut to
+  // black is implicit when the video ends. Set duration_ms > 0 only if
+  // you want a branded outro (and configure outro_logo_reveal flourish
+  // to render text/logo during it).
+  outro: { duration_ms: 0, style: "none", show_logo: false },
 
   // principles 1/8 — restraint axiom
   pacing: {

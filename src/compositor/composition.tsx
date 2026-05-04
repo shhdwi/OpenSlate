@@ -302,8 +302,9 @@ export const PolishComposition: React.FC<CompositionProps> = ({
         total_duration_ms={visible_duration_ms}
       />
 
-      {/* Outro fade overlay — anchored to the end of the VISIBLE duration. */}
-      {profile.outro.duration_ms > 0 && (
+      {/* Outro fade is OFF by default. Only mount the Sequence when the
+          user explicitly opted in via profile.outro.duration_ms > 0. */}
+      {profile.outro.duration_ms > 0 && profile.outro.style !== "none" && (
         <Sequence
           from={Math.max(
             0,

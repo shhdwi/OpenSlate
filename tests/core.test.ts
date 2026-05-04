@@ -337,6 +337,52 @@ describe("cursor arcs (principle 5)", () => {
   });
 });
 
+describe("polish profile schema — full-coverage validation", () => {
+  it("accepts default browser_zoom of 1.0", () => {
+    expect(() => parsePolishProfile(DEFAULT_POLISH_PROFILE)).not.toThrow();
+  });
+
+  it("rejects browser_zoom out of range", () => {
+    expect(() =>
+      parsePolishProfile({
+        ...DEFAULT_POLISH_PROFILE,
+        capture: { ...DEFAULT_POLISH_PROFILE.capture, browser_zoom: 5.0 },
+      }),
+    ).toThrow();
+    expect(() =>
+      parsePolishProfile({
+        ...DEFAULT_POLISH_PROFILE,
+        capture: { ...DEFAULT_POLISH_PROFILE.capture, browser_zoom: 0.1 },
+      }),
+    ).toThrow();
+  });
+
+  it("accepts browser_zoom of 1.25 (typical override)", () => {
+    expect(() =>
+      parsePolishProfile({
+        ...DEFAULT_POLISH_PROFILE,
+        capture: { ...DEFAULT_POLISH_PROFILE.capture, browser_zoom: 1.25 },
+      }),
+    ).not.toThrow();
+  });
+
+  it("default outro is OFF (duration_ms: 0, style: none)", () => {
+    expect(DEFAULT_POLISH_PROFILE.outro.duration_ms).toBe(0);
+    expect(DEFAULT_POLISH_PROFILE.outro.style).toBe("none");
+  });
+
+  it("default frame is browser_safari (Mac browser)", () => {
+    expect(DEFAULT_POLISH_PROFILE.frame.style).toBe("browser_safari");
+    expect(DEFAULT_POLISH_PROFILE.frame.chrome.url_bar).toBe(true);
+    expect(DEFAULT_POLISH_PROFILE.frame.chrome.traffic_lights).toBe(true);
+  });
+
+  it("readme_hero preset is capped at 6s", () => {
+    expect(DEFAULT_POLISH_PROFILE.exports.readme_hero.duration_max_s).toBe(6);
+    expect(DEFAULT_POLISH_PROFILE.exports.readme_hero.format).toBe("gif");
+  });
+});
+
 describe("zoom suggestions (Recordly-pattern engine)", () => {
   it("suggests one click cluster from a single click", () => {
     const events = [{ kind: "click" as const, t_ms: 1000, x: 200, y: 300 }];
@@ -365,5 +411,81 @@ describe("zoom suggestions (Recordly-pattern engine)", () => {
       min_strength: 0.99,
     });
     expect(out.length).toBe(0);
+  });
+
+  it("right-click (kind: click + button) treated same as left-click", () => {
+    // Our recorder doesn't differentiate left/right click in the kind field;
+    // both are kind=click. Suggestions should fire regardless.
+    const events = [{ kind: "click" as const, t_ms: 1000, x: 200, y: 300 }];
+    const out = suggestZooms(events, [], { viewport_width: 1280, viewport_height: 800 });
+    expect(out.length).toBe(1);
+  });
+
+  it("respects no_zoom flag — excludes those clicks from suggestions", () => {
+    const events = [
+      { kind: "click" as const, t_ms: 1000, x: 200, y: 300, no_zoom: true },
+      { kind: "click" as const, t_ms: 5000, x: 400, y: 500 },
+    ];
+    const out = suggestZooms(events, [], { viewport_width: 1280, viewport_height: 800 });
+    // Only the second click should produce a suggestion.
+    expect(out.length).toBe(1);
+    expect(out[0]?.focal_x).toBeCloseTo(400 / 1280, 4);
+  });
+});
+
+describe("connected-pan focal interpolation", () => {
+  // The auto-zoom resolver merges close-in-time clicks into a single envelope
+  // with multiple sub_clicks. zoomStateAt must interpolate the focal between
+  // sub_clicks during the bridge phase using the cubic-bezier(0.1, 0, 0.2, 1)
+  // ease — matches Recordly's connected-pan curve.
+
+  it("at peak of first sub-click, focal == first sub-click's focal", () => {
+    const events = [
+      { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
+      { kind: "click" as const, t_ms: 1800, x: 1100, y: 700 },
+    ];
+    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
+      viewport_width: 1280,
+      viewport_height: 800,
+    });
+    expect(env.length).toBe(1);
+    expect(env[0]?.sub_clicks.length).toBe(2);
+    const state = zoomStateAt(1000, env, DEFAULT_POLISH_PROFILE.auto_zoom);
+    expect(state.active).toBe(true);
+    const firstSub = env[0]?.sub_clicks[0];
+    expect(state.focal_x).toBeCloseTo(firstSub?.focal_x ?? 0, 3);
+    expect(state.focal_y).toBeCloseTo(firstSub?.focal_y ?? 0, 3);
+  });
+
+  it("at peak of last sub-click, focal == last sub-click's focal", () => {
+    const events = [
+      { kind: "click" as const, t_ms: 1000, x: 100, y: 100 },
+      { kind: "click" as const, t_ms: 1800, x: 1100, y: 700 },
+    ];
+    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
+      viewport_width: 1280,
+      viewport_height: 800,
+    });
+    const state = zoomStateAt(1800, env, DEFAULT_POLISH_PROFILE.auto_zoom);
+    const lastSub = env[0]?.sub_clicks[1];
+    expect(state.focal_x).toBeCloseTo(lastSub?.focal_x ?? 0, 3);
+    expect(state.focal_y).toBeCloseTo(lastSub?.focal_y ?? 0, 3);
+  });
+
+  it("focal interpolates monotonically between sub-clicks", () => {
+    const events = [
+      { kind: "click" as const, t_ms: 1000, x: 200, y: 200 },
+      { kind: "click" as const, t_ms: 1800, x: 1000, y: 600 },
+    ];
+    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
+      viewport_width: 1280,
+      viewport_height: 800,
+    });
+    const f1000 = zoomStateAt(1000, env, DEFAULT_POLISH_PROFILE.auto_zoom);
+    const f1400 = zoomStateAt(1400, env, DEFAULT_POLISH_PROFILE.auto_zoom);
+    const f1800 = zoomStateAt(1800, env, DEFAULT_POLISH_PROFILE.auto_zoom);
+    // Monotonic increase in x (since sub-click 2 is to the right of sub-click 1).
+    expect(f1400.focal_x).toBeGreaterThan(f1000.focal_x);
+    expect(f1800.focal_x).toBeGreaterThanOrEqual(f1400.focal_x);
   });
 });
