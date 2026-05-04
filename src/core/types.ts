@@ -223,7 +223,13 @@ export interface FlourishOutroLogoReveal {
 }
 
 export interface FlourishClickHighlight {
-  enabled_on: "manual" | "auto_protagonist" | "off";
+  /**
+   * - "every_click" — fires on every zoom-eligible click (default)
+   * - "auto_protagonist" — only on clicks marked is_protagonist
+   * - "manual" — only on clicks the agent explicitly opts into
+   * - "off" — never
+   */
+  enabled_on: "every_click" | "manual" | "auto_protagonist" | "off";
   style: "halo_pulse" | "arrow_callout" | "dotted_circle";
   color: string; // "brand.accent" | hex
   duration_ms: number;

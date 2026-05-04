@@ -33,13 +33,15 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     visible: true,
     smoothing: { kind: "spring", stiffness: 180, damping: 22, mass: 1 },
     motion_blur: { px: 8, threshold_velocity_px_per_s: 1200 },
-    click_bounce: { scale: [0.92, 1.0], duration_ms: 200, ease: "back_out" },
+    // Click bounce: more visible feedback. Compress further (0.85),
+    // hold the bounce longer (260ms), and stronger back_out so the
+    // overshoot reads. Combined with click_highlight halo_pulse this
+    // produces clear "click happened" feedback without being cartoony.
+    click_bounce: { scale: [0.85, 1.0], duration_ms: 260, ease: "back_out" },
     pre_click_settle_ms: 200, // principle 4
     size_multiplier: 1.0,
     style: "system_macos",
     // principle 5 (arcs): subtle upward bezier on long cursor traversals.
-    // 0.12 = ~12% of travel distance lifted upward at the midpoint.
-    // Set 0 to disable; >0.25 starts looking cartoony.
     path_arc_amount: 0.12,
   },
 
@@ -134,10 +136,14 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
       use_brand_logo: true,
     },
     click_highlight: {
-      enabled_on: "off", // off by default; agent opts in per protagonist click
+      // ON by default for every click — visible click feedback so the
+      // viewer can SEE that a click happened, beyond the cursor's bounce.
+      // Halo_pulse is the most subtle option (ring expanding from click
+      // point + fading); doesn't compete with auto-zoom or text content.
+      enabled_on: "every_click",
       style: "halo_pulse",
       color: "brand.accent",
-      duration_ms: 800,
+      duration_ms: 700,
     },
     step_badges: {
       style: "circular_numeric",

@@ -472,20 +472,37 @@ describe("connected-pan focal interpolation", () => {
     expect(state.focal_y).toBeCloseTo(lastSub?.focal_y ?? 0, 3);
   });
 
-  it("focal interpolates monotonically between sub-clicks", () => {
+  it("focal HOLDS at sub-click for 500ms before panning to next", () => {
+    // Sub-click A at t=1000, B at t=2200.
+    // Hold ends at t=1500. Pan from 1500 to min(2200, 1500+600) = 2100.
+    // So at t=1400 (still in hold) focal_x should equal A's focal_x.
     const events = [
       { kind: "click" as const, t_ms: 1000, x: 200, y: 200 },
-      { kind: "click" as const, t_ms: 1800, x: 1000, y: 600 },
+      { kind: "click" as const, t_ms: 2200, x: 1000, y: 600 },
     ];
     const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
       viewport_width: 1280,
       viewport_height: 800,
     });
     const f1000 = zoomStateAt(1000, env, DEFAULT_POLISH_PROFILE.auto_zoom);
-    const f1400 = zoomStateAt(1400, env, DEFAULT_POLISH_PROFILE.auto_zoom);
-    const f1800 = zoomStateAt(1800, env, DEFAULT_POLISH_PROFILE.auto_zoom);
-    // Monotonic increase in x (since sub-click 2 is to the right of sub-click 1).
-    expect(f1400.focal_x).toBeGreaterThan(f1000.focal_x);
-    expect(f1800.focal_x).toBeGreaterThanOrEqual(f1400.focal_x);
+    const f1400 = zoomStateAt(1400, env, DEFAULT_POLISH_PROFILE.auto_zoom); // mid-hold
+    expect(f1400.focal_x).toBeCloseTo(f1000.focal_x, 5);
+  });
+
+  it("focal interpolates between sub-clicks during pan window (after hold)", () => {
+    const events = [
+      { kind: "click" as const, t_ms: 1000, x: 200, y: 200 },
+      { kind: "click" as const, t_ms: 2200, x: 1000, y: 600 },
+    ];
+    const env = resolveZoomEnvelopes(events, DEFAULT_POLISH_PROFILE.auto_zoom, {
+      viewport_width: 1280,
+      viewport_height: 800,
+    });
+    const f1500 = zoomStateAt(1500, env, DEFAULT_POLISH_PROFILE.auto_zoom); // hold ends
+    const f1800 = zoomStateAt(1800, env, DEFAULT_POLISH_PROFILE.auto_zoom); // mid-pan
+    const f2100 = zoomStateAt(2100, env, DEFAULT_POLISH_PROFILE.auto_zoom); // pan ends
+    // Monotonic increase in x during the pan phase.
+    expect(f1800.focal_x).toBeGreaterThan(f1500.focal_x);
+    expect(f2100.focal_x).toBeGreaterThanOrEqual(f1800.focal_x);
   });
 });

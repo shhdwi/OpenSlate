@@ -22,10 +22,16 @@ export interface ClickHighlightProps {
 export const ClickHighlight: React.FC<ClickHighlightProps> = ({ config, ctx }) => {
   if (config.enabled_on === "off") return null;
 
-  // Find protagonist click events whose highlight window covers t_ms.
+  // Find click events whose highlight window covers t_ms. Filter by mode:
+  //   - every_click: every zoom-eligible click (default)
+  //   - auto_protagonist: only is_protagonist
+  //   - manual: only events the agent flags explicitly (currently no
+  //     opt-in on the recorder side, so defaults to no highlights)
   const candidates = ctx.events.filter((e) => {
     if (e.kind !== "click") return false;
+    if (e.no_zoom) return false; // skip if click was marked no_zoom
     if (config.enabled_on === "auto_protagonist" && !e.is_protagonist) return false;
+    if (config.enabled_on === "manual" && !e.is_protagonist) return false;
     return ctx.t_ms >= e.t_ms && ctx.t_ms <= e.t_ms + config.duration_ms;
   });
 

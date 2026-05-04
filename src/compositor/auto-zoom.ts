@@ -32,11 +32,18 @@ import type { RecordedEvent } from "../recorder/events.js";
 const CHAINED_GAP_MS = 1350;
 
 /**
- * Duration of the sub-click → sub-click pan inside a connected zoom. After
- * this many ms have passed since the previous sub-click's peak, the focal
- * has finished moving to the next sub-click's location.
+ * Hold time at each sub-click before the pan to the next sub-click begins.
+ * Without this, the focal IMMEDIATELY starts moving toward the next click
+ * — the cursor "doesn't stop at the click." With this hold, each click
+ * lands, the viewer registers the result, THEN the focal moves on.
  */
-const CONNECTED_PAN_MS = 800;
+const SUB_CLICK_HOLD_MS = 500;
+
+/**
+ * Duration of the sub-click → sub-click pan after the SUB_CLICK_HOLD_MS
+ * has elapsed. Focal interpolates over this window, eased.
+ */
+const CONNECTED_PAN_MS = 600;
 
 export interface SubClick {
   /** time in ms (recording timeline) when this sub-click registered */
@@ -298,9 +305,21 @@ function focalAt(
     const a = subs[i]!;
     const b = subs[i + 1]!;
     if (t_ms >= a.t_ms && t_ms <= b.t_ms) {
-      // Pan starts at A.t_ms, ends at min(B.t_ms, A.t_ms + CONNECTED_PAN_MS).
-      const pan_end = Math.min(b.t_ms, a.t_ms + CONNECTED_PAN_MS);
-      const raw_t = clamp01((t_ms - a.t_ms) / Math.max(1, pan_end - a.t_ms));
+      // Three phases between sub-clicks:
+      //   1. HOLD at A for SUB_CLICK_HOLD_MS — viewer reads the click result
+      //   2. PAN from A → B over CONNECTED_PAN_MS (eased)
+      //   3. HOLD at B until next sub-click (or envelope end)
+      // This is what makes the cursor visibly "stop" at each click before
+      // moving to the next.
+      const hold_end = a.t_ms + SUB_CLICK_HOLD_MS;
+      if (t_ms <= hold_end) {
+        return { focal_x: a.focal_x, focal_y: a.focal_y };
+      }
+      const pan_end = Math.min(b.t_ms, hold_end + CONNECTED_PAN_MS);
+      if (t_ms >= pan_end) {
+        return { focal_x: b.focal_x, focal_y: b.focal_y };
+      }
+      const raw_t = clamp01((t_ms - hold_end) / Math.max(1, pan_end - hold_end));
       const eased = cubicBezier01(0.1, 0, 0.2, 1, raw_t);
       return {
         focal_x: a.focal_x + (b.focal_x - a.focal_x) * eased,

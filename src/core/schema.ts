@@ -189,7 +189,7 @@ const flourishesSchema = z.object({
     use_brand_logo: z.boolean(),
   }),
   click_highlight: z.object({
-    enabled_on: z.enum(["manual", "auto_protagonist", "off"]),
+    enabled_on: z.enum(["every_click", "manual", "auto_protagonist", "off"]),
     style: z.enum(["halo_pulse", "arrow_callout", "dotted_circle"]),
     color: z.string(),
     duration_ms: z.number().min(200).max(1600),
