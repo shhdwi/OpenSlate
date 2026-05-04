@@ -80,10 +80,14 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
   },
 
   // principle 3 + appeal default
+  // browser_safari is the v1 default — most demos are web app demos, and a
+  // Mac-style browser chrome is the most universally recognized "this is a
+  // web app" frame. URL bar is on so the recording reads as a real browser
+  // session, not just a windowed app.
   frame: {
-    style: "laptop_minimal",
+    style: "browser_safari",
     theme: "auto",
-    chrome: { url_bar: false, traffic_lights: true },
+    chrome: { url_bar: true, traffic_lights: true },
     radius_px: 12,
     inner_shadow_px: 1,
     shadow_follows_content: true, // principle 9

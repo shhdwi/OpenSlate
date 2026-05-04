@@ -216,9 +216,35 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   // ── Execute plan ────────────────────────────────────────────────────────
   events.push({ kind: "frame_start", t_ms: tNow() });
 
+  /**
+   * Step-boundary snapshot. CDP screencast is delta-emitted: static pages
+   * (no animation, no input) emit no frames. Without explicit snapshots,
+   * the compositor's source-frame mapping at output time may have no
+   * frame to show during pre-action or post-action stillness. We snap a
+   * fresh PNG at each step boundary so there's always a frame available.
+   *
+   * Snapshots use the same numbering scheme as screencast frames, and
+   * their timestamps are inserted into frameTimestamps for the compositor's
+   * binary search to find them.
+   */
+  const snapshotFrame = async () => {
+    try {
+      const buf = await page.screenshot({ type: "png" });
+      const myIndex = frameIndex++;
+      const myTime = tNow();
+      frameTimestamps.push({ idx: myIndex, t_ms: myTime });
+      const fname = path.join(framesDir, `frame_${String(myIndex).padStart(6, "0")}.png`);
+      await fs.writeFile(fname, buf);
+    } catch (err) {
+      console.error("[recorder] step-boundary snapshot failed:", err);
+    }
+  };
+
   for (const [stepIndex, step] of opts.plan.steps.entries()) {
+    await snapshotFrame(); // capture pre-step state
     await executeStep(page, step, stepIndex, events, tNow);
   }
+  await snapshotFrame(); // capture final state after last step
 
   events.push({ kind: "frame_end", t_ms: tNow() });
   const totalDurationMs = tNow();
