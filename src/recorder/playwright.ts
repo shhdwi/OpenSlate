@@ -183,6 +183,22 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     y: -200,
   });
 
+  // Apply browser zoom (capture.browser_zoom) on every page load via an
+  // init script. Equivalent to the user pressing Cmd-+ in a real browser.
+  // Re-applies after any client-side route change so SPAs stay zoomed.
+  if (opts.capture.browser_zoom && opts.capture.browser_zoom !== 1) {
+    await page.addInitScript((z) => {
+      const apply = () => {
+        document.documentElement.style.zoom = String(z);
+      };
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", apply);
+      } else {
+        apply();
+      }
+    }, opts.capture.browser_zoom);
+  }
+
   // ── Start CDP screencast ────────────────────────────────────────────────
   // v1 simple capture; v1.5 should switch to HeadlessExperimental.beginFrame.
   // Race fix: capture frameIndex atomically with post-increment BEFORE the
@@ -283,12 +299,15 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
 
   // Compute the start offset: trim the page-load / settle period so the
   // visible portion of the output starts ~800ms before the first
-  // interactive event. Without this trim, demos open with several seconds
-  // of static "page loading" — boring on Twitter / README. 800ms lead-in
-  // gives the viewer just enough time to register the page before action.
+  // PLAN-DRIVEN interactive event. We only count events that originated
+  // from a plan step (step_index defined) — natural page-emitted events
+  // like scroll-on-load or initial focus shouldn't trip the trim, since
+  // those happen DURING page load which is what we want to skip.
   const LEAD_IN_MS = 800;
-  const interactiveKinds = new Set(["click", "type", "scroll", "hover", "input"]);
-  const firstInteractive = events.find((e) => interactiveKinds.has(e.kind));
+  const interactiveKinds = new Set(["click", "type", "scroll", "hover"]);
+  const firstInteractive = events.find(
+    (e) => interactiveKinds.has(e.kind) && typeof e.step_index === "number",
+  );
   const start_offset_ms = firstInteractive
     ? Math.max(0, firstInteractive.t_ms - LEAD_IN_MS)
     : 0;

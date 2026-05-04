@@ -22,6 +22,17 @@ export interface CaptureProfile {
   device_pixel_ratio: number;
   /** principle: timing_and_spacing — 60fps is the floor; below it, every other principle reads as stutter. */
   fps: number;
+  /**
+   * Browser zoom level — applied via CSS `zoom` to document.documentElement
+   * after every page navigation. Equivalent to the user pressing Cmd-+ in
+   * a real browser. Useful when the recorded site has tiny UI that doesn't
+   * read well at 1080p output. Default 1.0 (no zoom). Range 0.5–3.0.
+   *
+   * 1.0 = native (no change)
+   * 1.25 = "Cmd-+" once (good readability for dense apps)
+   * 1.5 = comfortable for text-heavy demos
+   */
+  browser_zoom: number;
 }
 
 // ─── Cursor ──────────────────────────────────────────────────────────────────

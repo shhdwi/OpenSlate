@@ -25,6 +25,7 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     viewport: { width: 1280, height: 800 },
     device_pixel_ratio: 2,
     fps: 60,
+    browser_zoom: 1.0, // override per-project for tiny-UI apps (try 1.25)
   },
 
   // principles 2/3/4/6/7

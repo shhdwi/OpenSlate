@@ -48,6 +48,7 @@ const captureSchema = z.object({
   fps: z.number().int().refine((v) => v === 60, {
     message: "principle 1 (timing_and_spacing): fps must be 60 in v1; lower fps reads as stutter",
   }),
+  browser_zoom: z.number().min(0.5).max(3.0).default(1.0),
 });
 
 const cursorSchema = z.object({

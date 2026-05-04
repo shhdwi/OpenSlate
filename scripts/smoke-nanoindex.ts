@@ -1,20 +1,21 @@
 /**
- * Real demo against nanoindex.nanonets.com — Nanonets's open-source agentic
- * RAG product. The homepage has Finance / Legal / Healthcare buttons that
- * toggle visible example content; perfect material for a multi-beat demo.
+ * Real product demo against nanoindex.nanonets.com/demo — Nanonets's open-
+ * source agentic RAG product. The /demo page hosts the live interactive
+ * UI: a document tree view, an entities tab (581 entities), a chat tab
+ * with a "Ask about this document..." input.
  *
  * Flow:
- *   1. Land on homepage (post-nav settle handles page-load period)
- *   2. Hold on hero (read the title)
- *   3. Click "Finance" tab
- *   4. Hold (let viewer see the Finance example)
- *   5. Click "Healthcare" tab
- *   6. Hold (let viewer see the Healthcare example)
- *   7. Hover "Try the demo" CTA
- *   8. Final hold
+ *   1. Land on /demo
+ *   2. Hold (let the tree view register)
+ *   3. Click "Entities (581)" tab — switch view
+ *   4. Hold so the entities panel is visible
+ *   5. Click "Chat" tab — switch to chat
+ *   6. Click into the question input
+ *   7. Type a real question
+ *   8. Hold so the typed query reads
  *
- * Connected-pan auto-merges close-in-time clicks into one sustained zoom
- * with smooth focal interpolation between Finance → Healthcare → CTA.
+ * Connected-pan auto-merges the close-in-time clicks into one sustained
+ * zoom that smoothly pans the focal between Tree → Entities → Chat → Input.
  */
 
 import {
@@ -25,43 +26,50 @@ import {
 
 async function main() {
   const planResult = await orchestratePlan({
-    description: "NanoIndex use-case showcase — Finance + Healthcare + CTA",
-    protagonist: "nanoindex-tour",
-    base_url: "https://nanoindex.nanonets.com",
+    description: "NanoIndex live demo — Tree → Entities → Chat → Ask",
+    protagonist: "nanoindex-demo-tour",
+    base_url: "https://nanoindex.nanonets.com/demo",
     kind: "demo",
     steps: [
       {
         action: "navigate",
-        selector: "https://nanoindex.nanonets.com",
-        expected_duration_ms: 1000,
-        note: "Open NanoIndex",
+        selector: "https://nanoindex.nanonets.com/demo",
+        expected_duration_ms: 1800,
+        note: "Open the live demo",
       },
-      // Brief hero hold so the viewer registers what NanoIndex is.
-      { action: "wait", expected_duration_ms: 700 },
-      // Show the Finance use case.
+      // Longer hero hold — /demo loads documents async; need ~2s for the
+      // tree view to render before we start clicking around.
+      { action: "wait", expected_duration_ms: 1500 },
+      // Switch to the Entities view (581 entities — real product moment).
       {
         action: "click",
-        selector: "button:has-text('Finance')",
-        expected_duration_ms: 900,
-        note: "Try Finance docs",
-      },
-      // Hold so the use-case content reads.
-      { action: "wait", expected_duration_ms: 800 },
-      // Show the Healthcare use case — connected-pan smoothly transitions.
-      {
-        action: "click",
-        selector: "button:has-text('Healthcare')",
-        expected_duration_ms: 900,
-        note: "Or Healthcare records",
-      },
-      { action: "wait", expected_duration_ms: 800 },
-      // Land on the CTA. Hover (no real click — we don't navigate away).
-      {
-        action: "hover",
-        selector: "a:has-text('Try the demo')",
+        selector: "button:has-text('Entities')",
         expected_duration_ms: 700,
-        note: "Try the demo",
+        note: "Browse 581 entities",
       },
+      { action: "wait", expected_duration_ms: 600 },
+      // Switch to Chat — the agentic RAG interface.
+      {
+        action: "click",
+        selector: "button:has-text('Chat')",
+        expected_duration_ms: 700,
+        note: "Open chat",
+      },
+      { action: "wait", expected_duration_ms: 400 },
+      // Focus the question input and type a real query.
+      {
+        action: "click",
+        selector: "input[placeholder*='Ask about']",
+        expected_duration_ms: 600,
+        note: "Ask a question",
+      },
+      {
+        action: "type",
+        selector: "input[placeholder*='Ask about']",
+        value: "What are the key risks in this document?",
+        expected_duration_ms: 1400,
+      },
+      // Hold so the typed query reads, then end.
       { action: "wait", expected_duration_ms: 1100 },
     ],
   });
@@ -79,8 +87,12 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("\nRecording NanoIndex tour...");
-  const exec = await orchestrateExecute({ plan: planResult.plan });
+  console.log("\nRecording NanoIndex live demo tour (browser_zoom: 1.25)...");
+  const exec = await orchestrateExecute({
+    plan: planResult.plan,
+    // Zoom the page 25% so dense product UI reads at 1080p output.
+    capture_override: { browser_zoom: 1.25 },
+  });
   console.log(
     `✓ recorded ${exec.manifest.frame_count} frames · duration=${exec.manifest.duration_ms}ms · trim=${exec.manifest.start_offset_ms}ms`,
   );

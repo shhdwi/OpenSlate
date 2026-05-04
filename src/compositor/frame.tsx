@@ -217,7 +217,19 @@ export const Frame: React.FC<FrameProps> = ({ profile, layout, brand, children }
             />
           )}
         </div>
-        <div style={{ position: "relative", flex: 1 }}>{children}</div>
+        <div
+          style={{
+            position: "relative",
+            flex: 1,
+            // Background shows through any letterbox bars from objectFit:contain
+            // when the recording aspect doesn't match the content area. Theme-tuned
+            // so light theme = white-ish, dark theme = dark grey, blending with
+            // most web app backgrounds.
+            background: chromeBg,
+          }}
+        >
+          {children}
+        </div>
       </div>
     );
   }

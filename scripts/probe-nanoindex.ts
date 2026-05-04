@@ -11,11 +11,11 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
 
-  console.log("→ navigating to https://nanoindex.nanonets.com");
+  console.log("→ navigating to https://nanoindex.nanonets.com/demo");
   await page
-    .goto("https://nanoindex.nanonets.com", { waitUntil: "networkidle", timeout: 25_000 })
+    .goto("https://nanoindex.nanonets.com/demo", { waitUntil: "networkidle", timeout: 25_000 })
     .catch((e) => console.log("nav error:", e.message));
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(2500);
 
   console.log(`\nLanded on: ${page.url()}`);
   console.log(`Title: ${await page.title()}\n`);

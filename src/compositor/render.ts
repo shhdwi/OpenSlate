@@ -13,6 +13,7 @@
 
 import path from "node:path";
 import fs from "node:fs/promises";
+import { spawn } from "node:child_process";
 import type { ExportPreset, PolishProfile } from "../core/types.js";
 import type { CursorSample, RecordedEvent, RecordingManifest } from "../recorder/events.js";
 
@@ -134,21 +135,40 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
 
   await fs.mkdir(path.dirname(opts.output_path), { recursive: true });
 
+  // For GIF output we render to mp4 first (Remotion's gif codec is single-
+  // pass and produces visible palette banding on gradients), then convert
+  // via ffmpeg's two-pass palettegen + paletteuse pipeline. The result is
+  // dramatically cleaner — proper dithering, no diagonal banding on
+  // gradient backgrounds.
+  const isGif = opts.preset.format === "gif";
+  const renderPath = isGif
+    ? opts.output_path.replace(/\.gif$/i, ".__gif_intermediate.mp4")
+    : opts.output_path;
+
   await renderMedia({
     composition,
     serveUrl: bundleLocation,
-    codec: opts.preset.format === "gif" ? "gif" : opts.preset.format === "webm" ? "vp8" : "h264",
-    outputLocation: opts.output_path,
+    codec: isGif ? "h264" : opts.preset.format === "webm" ? "vp8" : "h264",
+    outputLocation: renderPath,
     inputProps,
     imageFormat: "jpeg",
     jpegQuality: 92,
-    crf: opts.preset.format === "gif" ? undefined : 18,
+    crf: 18,
     // Recording frames live at file:// paths; Chromium's default policy
     // blocks file:// loads from a non-file:// origin (the bundled serve URL).
     // Disable web security for the render pass only — Remotion launches a
     // dedicated headless instance, so this scope is safe.
     chromiumOptions: { disableWebSecurity: true },
   });
+
+  if (isGif) {
+    await convertMp4ToGif(renderPath, opts.output_path, {
+      fps: opts.preset.fps ?? 24,
+      width,
+      height,
+    });
+    await fs.unlink(renderPath).catch(() => {});
+  }
 
   const stat = await fs.stat(opts.output_path);
   return {
@@ -157,6 +177,63 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     duration_ms: totalDurationMs,
     dimensions: [width, height],
   };
+}
+
+/**
+ * Two-pass GIF encoding: first pass generates an optimal 256-color palette
+ * weighted by frame statistics; second pass uses that palette with Bayer
+ * dithering to produce significantly cleaner output than ffmpeg's default
+ * single-pass encoder (especially on gradient backgrounds, where single-pass
+ * produces visible diagonal banding).
+ */
+async function convertMp4ToGif(
+  src: string,
+  dst: string,
+  opts: { fps: number; width: number; height: number },
+): Promise<void> {
+  const palettePath = `${src}.palette.png`;
+  const filtersPaletteGen = `fps=${opts.fps},scale=${opts.width}:${opts.height}:flags=lanczos,palettegen=stats_mode=full`;
+  const filtersUse = `fps=${opts.fps},scale=${opts.width}:${opts.height}:flags=lanczos[v];[v][1:v]paletteuse=dither=bayer:bayer_scale=5`;
+
+  await runFfmpeg([
+    "-y",
+    "-i",
+    src,
+    "-vf",
+    filtersPaletteGen,
+    palettePath,
+  ]);
+
+  await runFfmpeg([
+    "-y",
+    "-i",
+    src,
+    "-i",
+    palettePath,
+    "-filter_complex",
+    filtersUse,
+    "-loop",
+    "0",
+    dst,
+  ]);
+
+  await fs.unlink(palettePath).catch(() => {});
+}
+
+async function runFfmpeg(args: string[]): Promise<void> {
+  const ffmpegBin = process.env.OPENSLATE_FFMPEG_PATH || "ffmpeg";
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegBin, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderrBuf = "";
+    proc.stderr.on("data", (d) => {
+      stderrBuf += d.toString();
+    });
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited ${code}\n${stderrBuf.slice(-1000)}`));
+    });
+  });
 }
 
 async function fileExists(p: string): Promise<boolean> {

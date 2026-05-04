@@ -260,7 +260,16 @@ export const PolishComposition: React.FC<CompositionProps> = ({
         >
           <Img
             src={sourceFrameUrl}
-            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+            // contain (not cover) so nothing on the recording is cropped
+            // by the browser frame's content-area aspect mismatch. The
+            // background of the inner content area shows through any
+            // letterbox bars; theme-tuned in frame.tsx so it blends.
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              display: "block",
+            }}
           />
           {/* Cursor lives inside the scene; positioned in viewport % so it
               tracks the recording under any frame size or zoom transform. */}
