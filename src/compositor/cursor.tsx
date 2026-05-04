@@ -69,14 +69,23 @@ export const Cursor: React.FC<CursorRenderProps> = ({
   if (!profile.visible) return null;
 
   // principle 6: click bounce
+  // Same delay as the click halo (~250ms): the cursor's spring takes time
+  // to settle at the click target, so firing the bounce at click-event-time
+  // would scrunch the cursor mid-flight. Wait for visual arrival.
+  const CLICK_FX_DELAY_MS = 250;
   const bounce_dur = profile.click_bounce.duration_ms;
   const lastClick = [...events]
     .reverse()
-    .find((e) => e.kind === "click" && t_ms >= e.t_ms && t_ms <= e.t_ms + bounce_dur);
+    .find(
+      (e) =>
+        e.kind === "click" &&
+        t_ms >= e.t_ms + CLICK_FX_DELAY_MS &&
+        t_ms <= e.t_ms + CLICK_FX_DELAY_MS + bounce_dur,
+    );
 
   let bounceScale = 1;
   if (lastClick) {
-    const local_t = (t_ms - lastClick.t_ms) / bounce_dur;
+    const local_t = (t_ms - lastClick.t_ms - CLICK_FX_DELAY_MS) / bounce_dur;
     const eased = applyEase(profile.click_bounce.ease, Math.min(1, local_t));
     const [from, to] = profile.click_bounce.scale;
     if (local_t < 0.5) {
