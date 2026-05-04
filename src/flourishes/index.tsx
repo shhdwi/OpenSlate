@@ -7,7 +7,9 @@
 import React from "react";
 import { ClickHighlight } from "./click-highlight.js";
 import { OutroLogoReveal } from "./outro-logo-reveal.js";
-import { SceneTitleCard, StepBadges, SuccessBurst } from "./stubs.js";
+import { SceneTitleCard } from "./scene-title-card.js";
+import { StepBadges } from "./step-badges.js";
+import { SuccessBurst } from "./success-burst.js";
 import type { FlourishesAggregateProps, FlourishContext } from "./types.js";
 
 export const Flourishes: React.FC<FlourishesAggregateProps> = ({
