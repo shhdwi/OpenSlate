@@ -39,16 +39,30 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
   const { bundle } = await import("@remotion/bundler");
   const { renderMedia, selectComposition } = await import("@remotion/renderer");
 
-  // Resolve the Remotion entry. In production (consumed via npm), we ship
-  // dist/compositor/remotion-entry.js next to render.js. In dev (running
-  // from src/ via bun), we fall back to the .tsx source — Remotion's bundler
-  // accepts both. Final fallback: the dist build, if a previous `bun run
-  // build` produced one.
+  // Resolve the Remotion entry. The render code can be bundled into
+  // multiple output locations (dist/cli.js, dist/index.js,
+  // dist/compositor/index.js) depending on which entry imported it,
+  // so import.meta.dirname is unreliable. We try a wide candidate list:
+  //   1. Co-located (works when render.ts and remotion-entry.tsx are
+  //      bundled together — i.e., dist/compositor/index.js + dist/compositor/remotion-entry.js)
+  //   2. Sibling compositor/ subdir (cli.js or top-level index.js bundle)
+  //   3. Parent compositor/ (sub-bundle inside compositor/)
+  //   4. Walk up to find the openslate package root then look for compositor/
+  //   5. Dev source paths
   const dirname = import.meta.dirname ?? __dirname;
-  const entryCandidates = [
+  const entryCandidates: string[] = [
     path.resolve(dirname, "./remotion-entry.js"),
+    path.resolve(dirname, "./remotion-entry.cjs"),
+    path.resolve(dirname, "./compositor/remotion-entry.js"),
+    path.resolve(dirname, "./compositor/remotion-entry.cjs"),
+    path.resolve(dirname, "../compositor/remotion-entry.js"),
+    path.resolve(dirname, "../compositor/remotion-entry.cjs"),
+    // Walk up looking for an openslate install with the bundled entry.
+    ...walkUpToOpenSlate(dirname),
+    // Dev source paths.
     path.resolve(dirname, "./remotion-entry.tsx"),
     path.resolve(dirname, "../../dist/compositor/remotion-entry.js"),
+    path.resolve(dirname, "../../src/compositor/remotion-entry.tsx"),
   ];
   let entryPath: string | null = null;
   for (const candidate of entryCandidates) {
@@ -247,6 +261,26 @@ async function fileExists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Walk up from `start` looking for `node_modules/openslate/dist/compositor/
+ * remotion-entry.{js,cjs}` (the bundled entry shipped with the npm package).
+ * Stops at filesystem root or after 8 levels up.
+ */
+function walkUpToOpenSlate(start: string): string[] {
+  const candidates: string[] = [];
+  let dir = start;
+  for (let i = 0; i < 8; i++) {
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    candidates.push(
+      path.join(parent, "node_modules/openslate/dist/compositor/remotion-entry.js"),
+      path.join(parent, "node_modules/openslate/dist/compositor/remotion-entry.cjs"),
+    );
+    dir = parent;
+  }
+  return candidates;
 }
 
 async function readJson<T>(p: string): Promise<T> {

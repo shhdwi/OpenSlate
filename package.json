@@ -34,7 +34,8 @@
     "dist",
     "skills",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE.md"
   ],
   "exports": {
     ".": {

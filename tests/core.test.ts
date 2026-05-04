@@ -6,6 +6,7 @@ import { buildPlan, validatePlan, hasBlocking } from "../src/plan/index.js";
 import { resolveZoomEnvelopes, zoomStateAt } from "../src/compositor/auto-zoom.js";
 import { suggestZooms } from "../src/compositor/zoom-suggestions.js";
 import { injectArcWaypoints } from "../src/utils/springs.js";
+import { renderInitTemplate } from "../src/config/init-template.js";
 
 describe("polish profile schema", () => {
   it("default profile validates", () => {
@@ -334,6 +335,55 @@ describe("cursor arcs (principle 5)", () => {
       0,
     );
     expect(arc.length).toBe(2);
+  });
+});
+
+describe("init-template drift protection", () => {
+  // The template was hand-written and silently drifted from the actual
+  // defaults whenever we changed them. Now generated programmatically
+  // from DEFAULT_POLISH_PROFILE; this test catches any regression.
+  it("includes browser_zoom (added in latest defaults)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/browser_zoom:/);
+  });
+
+  it("uses browser_safari frame (current default), not laptop_minimal", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/style:\s*"browser_safari"/);
+    expect(tpl).not.toMatch(/style:\s*"laptop_minimal"/);
+  });
+
+  it("outro is OFF by default", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/duration_ms:\s*0/);
+    expect(tpl).toMatch(/style:\s*"none"/);
+  });
+
+  it("click_highlight enabled_on every_click", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/enabled_on:\s*"every_click"/);
+  });
+
+  it("click_bounce uses calibrated 0.85 / 260ms / back_out", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/click_bounce:\s*\{\s*scale:\s*\[0\.85,\s*1\]/);
+    expect(tpl).toMatch(/duration_ms:\s*260/);
+  });
+
+  it("path_arc_amount: 0.12 (not 0.0)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/path_arc_amount:\s*0\.12/);
+  });
+
+  it("auto_zoom asymmetric durations: 600 in / 400 out", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/duration_in_ms:\s*600/);
+    expect(tpl).toMatch(/duration_out_ms:\s*400/);
+  });
+
+  it("scale 1.4 (not the earlier 1.25)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/scale:\s*1\.4/);
   });
 });
 
