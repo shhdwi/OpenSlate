@@ -53,25 +53,47 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
 
+  // Output timeline starts at 0; recording timeline is offset by
+  // manifest.start_offset_ms (the recorder trimmed the page-load period).
+  // Output t_ms maps to recording_t_ms = t_ms + start_offset_ms.
+  const start_offset = manifest.start_offset_ms ?? 0;
   const t_ms = (frame / fps) * 1000;
+  const visible_duration_ms = manifest.duration_ms - start_offset;
+
+  // Shift events + cursor samples by -start_offset; filter out anything
+  // before the offset so it doesn't influence the visible output.
+  const visibleEvents = React.useMemo(
+    () =>
+      events
+        .filter((e) => e.t_ms >= start_offset)
+        .map((e) => ({ ...e, t_ms: e.t_ms - start_offset })),
+    [events, start_offset],
+  );
+  const visibleCursorSamples = React.useMemo(
+    () =>
+      cursor_samples
+        .filter((s) => s.t_ms >= start_offset)
+        .map((s) => ({ ...s, t_ms: s.t_ms - start_offset })),
+    [cursor_samples, start_offset],
+  );
 
   const zoomEnvelopes = React.useMemo(
     () =>
-      resolveZoomEnvelopes(events, profile.auto_zoom, {
+      resolveZoomEnvelopes(visibleEvents, profile.auto_zoom, {
         viewport_width: manifest.viewport.width,
         viewport_height: manifest.viewport.height,
       }),
-    [events, profile.auto_zoom, manifest.viewport.width, manifest.viewport.height],
+    [visibleEvents, profile.auto_zoom, manifest.viewport.width, manifest.viewport.height],
   );
 
   const cursorTrajectory = React.useMemo(
     () =>
       resolveSpringTrajectory(
-        cursor_samples.map((s) => ({ t_ms: s.t_ms, x: s.x, y: s.y })),
+        visibleCursorSamples.map((s) => ({ t_ms: s.t_ms, x: s.x, y: s.y })),
         profile.cursor.smoothing,
         fps,
       ),
-    [cursor_samples, profile.cursor.smoothing, fps],
+    [visibleCursorSamples, profile.cursor.smoothing, fps],
   );
 
   const zoom = zoomStateAt(t_ms, zoomEnvelopes, profile.auto_zoom);
@@ -132,16 +154,33 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   const frameIndex = Math.min(cursorTrajectory.length - 1, frame);
   const cur = cursorTrajectory[frameIndex] ?? { x: 0, y: 0, speed_px_per_s: 0 };
 
-  // Map timeline frame → existing source frame index, with neighbor fallback.
-  const indices = manifest.frame_indices?.length
+  // Map output time → source frame using actual recording timestamps.
+  // CDP screencast is delta-emitted (no frame on static pages), so a
+  // ratio-based mapping would skip from page-load frames to mid-typing
+  // frames. With timestamps, we can find the most-recent frame whose
+  // capture time ≤ recording_t_ms and display it (correct: a static page
+  // shows the last-emitted frame until the next visual change).
+  const allIndices = manifest.frame_indices?.length
     ? manifest.frame_indices
     : Array.from({ length: manifest.frame_count }, (_, i) => i);
-  const ratio = manifest.duration_ms > 0 ? t_ms / manifest.duration_ms : 0;
-  const sliceIdx = Math.min(
-    indices.length - 1,
-    Math.max(0, Math.round(ratio * (indices.length - 1))),
-  );
-  const sourceFrameIndex = indices[sliceIdx] ?? 0;
+  const allTimestamps =
+    manifest.frame_timestamps_ms?.length === allIndices.length
+      ? manifest.frame_timestamps_ms
+      : // Fallback for older manifests: assume uniform distribution.
+        allIndices.map((_, i) =>
+          (i / Math.max(1, allIndices.length - 1)) * manifest.duration_ms,
+        );
+
+  const recording_t_ms = t_ms + start_offset;
+  // Binary search for the latest frame with timestamp ≤ recording_t_ms.
+  let lo = 0;
+  let hi = allTimestamps.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if ((allTimestamps[mid] ?? 0) <= recording_t_ms) lo = mid;
+    else hi = mid - 1;
+  }
+  const sourceFrameIndex = allIndices[lo] ?? 0;
   const relPath = `${frames_url_prefix}/frame_${String(sourceFrameIndex).padStart(6, "0")}.png`;
   const sourceFrameUrl =
     frames_url_prefix.startsWith("http") || frames_url_prefix.startsWith("file:")
@@ -195,7 +234,7 @@ export const PolishComposition: React.FC<CompositionProps> = ({
             viewport_width={viewport_w}
             viewport_height={viewport_h}
             speed_px_per_s={cur.speed_px_per_s ?? 0}
-            events={events}
+            events={visibleEvents}
             t_ms={t_ms}
             profile={profile.cursor}
           />
@@ -204,18 +243,24 @@ export const PolishComposition: React.FC<CompositionProps> = ({
 
       {/* L6: Captions, optional */}
       {profile.captions.mode !== "off" && (
-        <Captions profile={profile.captions} events={events} t_ms={t_ms} />
+        <Captions profile={profile.captions} events={visibleEvents} t_ms={t_ms} />
       )}
 
       {/* L7: Flourishes (outro logo reveal, click highlight, etc.) */}
-      <Flourishes profile={profile.flourishes} brand={profile.brand} events={events} t_ms={t_ms} />
+      <Flourishes
+        profile={profile.flourishes}
+        brand={profile.brand}
+        events={visibleEvents}
+        t_ms={t_ms}
+        total_duration_ms={visible_duration_ms}
+      />
 
-      {/* Outro fade overlay */}
+      {/* Outro fade overlay — anchored to the end of the VISIBLE duration. */}
       {profile.outro.duration_ms > 0 && (
         <Sequence
           from={Math.max(
             0,
-            fps * (manifest.duration_ms / 1000) - fps * (profile.outro.duration_ms / 1000),
+            fps * (visible_duration_ms / 1000) - fps * (profile.outro.duration_ms / 1000),
           )}
           durationInFrames={Math.ceil(fps * (profile.outro.duration_ms / 1000))}
         >

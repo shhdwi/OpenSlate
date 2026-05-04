@@ -25,6 +25,8 @@ const defaultProps = {
     device_pixel_ratio: 2,
     frame_count: 300,
     frame_indices: [],
+    frame_timestamps_ms: [],
+    start_offset_ms: 0,
     frames_dir: "frames",
     events_file: "events.json",
     cursor_file: "cursor.json",

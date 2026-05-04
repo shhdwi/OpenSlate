@@ -31,55 +31,55 @@ async function main() {
     base_url: "https://accounts.nanonets.com/signup",
     kind: "demo",
     steps: [
-      // 1. Land on the signup page (network-idle handles the load wait;
-      //    the budget here is for post-load read).
+      // 1. Land on the signup page. Recorder enforces a 1500ms post-nav
+      //    settle on top of the navigate's networkidle + this budget.
       {
         action: "navigate",
         selector: "https://accounts.nanonets.com/signup",
         expected_duration_ms: 1200,
-        note: "Open signup",
+        note: "Sign up for Nanonets",
       },
       // 2. Hero hold — let the viewer register what page we're on.
       { action: "wait", expected_duration_ms: 800 },
-      // 3. Click into the email field — protagonist click; gets auto-zoom.
+      // 3. Click into the email field. Triggers auto-zoom; connected-pan
+      //    will sustain it through the subsequent type + click sequence.
       {
         action: "click",
         selector: "#email",
         expected_duration_ms: 900,
-        note: "Focus email",
+        note: "Enter your email",
       },
-      // 4. Type a fake email. value carries through to Playwright's page.type
-      //    which adds 30ms per keystroke; budget reflects that.
+      // 4. Type the email. Synthetic 'type' event the recorder emits is
+      //    zoom-eligible too; connected-pan keeps us in the zoomed view.
       {
         action: "type",
         selector: "#email",
         value: "demo@example.dev",
         expected_duration_ms: 700,
-        no_zoom: true,
       },
-      // 5. Click into password field. no_zoom=true: principle 8 restraint,
-      //    we don't want a second zoom right after the email zoom.
+      // 5. Click password field — connected-pan smoothly transitions the
+      //    focal from email to password; no zoom-out → zoom-in jitter.
       {
         action: "click",
         selector: "#password",
         expected_duration_ms: 700,
-        no_zoom: true,
-        note: "Focus password",
+        note: "Choose a password",
       },
-      // 6. Type a fake password.
+      // 6. Type the password.
       {
         action: "type",
         selector: "#password",
         value: "OpenSlateTest!2026",
         expected_duration_ms: 800,
       },
-      // 7. Hover the submit button so the cursor lands on it but never clicks.
-      //    No real account gets created.
+      // 7. Hover the submit button. The hover step also emits a synthetic
+      //    interaction event; if it's far enough from password (it is —
+      //    button is below), it'll start a fresh envelope cleanly.
       {
         action: "hover",
         selector: "button:has-text('Create free account')",
-        expected_duration_ms: 700,
-        note: "Hover Create free account",
+        expected_duration_ms: 800,
+        note: "Click to create account",
       },
       // 8. Final hold — let the viewer see the filled form.
       { action: "wait", expected_duration_ms: 1200 },

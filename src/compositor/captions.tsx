@@ -25,19 +25,29 @@ interface CaptionWindow {
 }
 
 export const Captions: React.FC<CaptionsProps> = ({ profile, events, t_ms }) => {
-  // Build caption windows from clicks/inputs — v1 sources from event notes
-  // (which the plan step `note` field provides via the recorder).
+  // Build caption windows from interactive events that carry a `note` field
+  // (set by the recorder from the plan step's `note`). Captions show
+  // lead_ms BEFORE the event fires (principle 4: anticipation) and persist
+  // until the next interactive event.
   const windows: CaptionWindow[] = [];
+  const interactiveKinds = new Set(["click", "type", "scroll", "hover", "input"]);
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
     if (!e) continue;
-    if (e.kind !== "click" && e.kind !== "input" && e.kind !== "scroll") continue;
-    // Heuristic v1 caption text — recorder doesn't yet inject step notes into
-    // events; this is a stub. v1.5 will plumb step.note into the event log.
-    const text = "";
+    if (!interactiveKinds.has(e.kind)) continue;
+    const text = (e.note ?? "").trim();
     if (!text) continue;
-    const next = events[i + 1];
-    const window_end = next ? next.t_ms : e.t_ms + 2500;
+    // End of this caption: just before the next interactive event with a note,
+    // or 2.5s after this event if it's the last.
+    let window_end = e.t_ms + 2500;
+    for (let j = i + 1; j < events.length; j++) {
+      const next = events[j];
+      if (!next) continue;
+      if (interactiveKinds.has(next.kind) && (next.note ?? "").trim()) {
+        window_end = next.t_ms - 50;
+        break;
+      }
+    }
     windows.push({
       start_ms: Math.max(0, e.t_ms - profile.lead_ms),
       end_ms: window_end,

@@ -190,6 +190,10 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   // and overwrite each other's output, producing gaps in the sequence.
   const client = await context.newCDPSession(page);
   let frameIndex = 0;
+  /** Per-frame recording timestamps. Captured at handler invocation so the
+   *  composition can map output time → exact source frame even though CDP
+   *  screencast is delta-emitted (sparse over static pages). */
+  const frameTimestamps: { idx: number; t_ms: number }[] = [];
   await client.send("Page.startScreencast", {
     format: "png",
     quality: 90,
@@ -197,6 +201,8 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   });
   client.on("Page.screencastFrame", async (event) => {
     const myIndex = frameIndex++; // atomic in single-threaded JS event loop
+    const myTime = tNow();
+    frameTimestamps.push({ idx: myIndex, t_ms: myTime });
     const buffer = Buffer.from(event.data, "base64");
     const fname = path.join(framesDir, `frame_${String(myIndex).padStart(6, "0")}.png`);
     try {
@@ -211,11 +217,17 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   events.push({ kind: "frame_start", t_ms: tNow() });
 
   for (const [stepIndex, step] of opts.plan.steps.entries()) {
-    await executeStep(page, step, stepIndex);
+    await executeStep(page, step, stepIndex, events, tNow);
   }
 
   events.push({ kind: "frame_end", t_ms: tNow() });
   const totalDurationMs = tNow();
+
+  // Post-pass: attach step metadata (note, no_zoom, is_protagonist, step_index)
+  // to click events emitted by the DOM listener. We can't tag those at emit
+  // time because they come from a binding — we tag them now by step.action
+  // ordering. This makes captions in `from_steps` mode work.
+  attachStepMetadataToClicks(events, opts.plan.steps);
 
   // ── Tear down ───────────────────────────────────────────────────────────
   await client.send("Page.stopScreencast").catch(() => {});
@@ -232,13 +244,28 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     fs.writeFile(planFile, JSON.stringify(opts.plan, null, 2)),
   ]);
 
-  // Scan the frames dir to record exactly which indices made it to disk —
-  // protects the compositor from any residual gaps.
+  // Scan the frames dir to record exactly which indices made it to disk,
+  // then look up each one's capture timestamp.
   const frameFiles = await fs.readdir(framesDir);
   const frame_indices = frameFiles
     .filter((f) => /^frame_\d+\.png$/.test(f))
     .map((f) => Number.parseInt(f.replace(/[^\d]/g, ""), 10))
     .sort((a, b) => a - b);
+  const tsByIdx = new Map<number, number>();
+  for (const ts of frameTimestamps) tsByIdx.set(ts.idx, ts.t_ms);
+  const frame_timestamps_ms = frame_indices.map((idx) => tsByIdx.get(idx) ?? 0);
+
+  // Compute the start offset: trim the page-load / settle period so the
+  // visible portion of the output starts ~800ms before the first
+  // interactive event. Without this trim, demos open with several seconds
+  // of static "page loading" — boring on Twitter / README. 800ms lead-in
+  // gives the viewer just enough time to register the page before action.
+  const LEAD_IN_MS = 800;
+  const interactiveKinds = new Set(["click", "type", "scroll", "hover", "input"]);
+  const firstInteractive = events.find((e) => interactiveKinds.has(e.kind));
+  const start_offset_ms = firstInteractive
+    ? Math.max(0, firstInteractive.t_ms - LEAD_IN_MS)
+    : 0;
 
   const manifest: RecordingManifest = {
     id,
@@ -249,6 +276,8 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     device_pixel_ratio: opts.capture.device_pixel_ratio,
     frame_count: frame_indices.length,
     frame_indices,
+    frame_timestamps_ms,
+    start_offset_ms,
     frames_dir: "frames",
     events_file: "events.json",
     cursor_file: "cursor.json",
@@ -261,9 +290,75 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   return { recording_id: id, recording_dir: dir, manifest };
 }
 
-async function executeStep(page: Page, step: PlanStep, stepIndex: number): Promise<void> {
-  // Honor a small pre-step pause so cursor samples settle (principle 4: anticipation).
+/**
+ * Walk through plan steps and the events log together, attaching step
+ * metadata to each click event in order. Plan click steps map 1:1 to
+ * emitted click events under normal flow (selector found, no retry). When
+ * counts diverge (selector miss, sub-event), we degrade gracefully.
+ */
+function attachStepMetadataToClicks(events: RecordedEvent[], steps: PlanStep[]): void {
+  const clickSteps = steps
+    .map((s, i) => ({ step: s, index: i }))
+    .filter(({ step }) => step.action === "click");
+  let nextStep = 0;
+  for (const ev of events) {
+    if (ev.kind !== "click") continue;
+    if (ev.synthetic) continue; // already tagged at emit
+    const target = clickSteps[nextStep];
+    if (!target) break;
+    ev.step_index = target.index;
+    ev.note = target.step.note;
+    ev.no_zoom = target.step.no_zoom;
+    nextStep++;
+  }
+}
+
+async function executeStep(
+  page: Page,
+  step: PlanStep,
+  stepIndex: number,
+  events: RecordedEvent[],
+  tNow: () => number,
+): Promise<void> {
   const safeWait = (ms: number) => page.waitForTimeout(Math.max(0, ms));
+
+  /**
+   * Helper: resolve a selector to its on-screen viewport-space center. Used
+   * to synthesize zoom-eligible events for type/scroll/hover steps where
+   * the DOM-listener path doesn't naturally emit a click.
+   */
+  async function resolveCenter(
+    selector: string | undefined,
+  ): Promise<{ x: number; y: number } | null> {
+    if (!selector) return null;
+    try {
+      const handle = await page.$(selector);
+      if (!handle) return null;
+      const box = await handle.boundingBox();
+      if (!box) return null;
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Emit a synthetic interaction event so the auto-zoom resolver can pick it up. */
+  function emitInteraction(
+    kind: "click" | "type" | "scroll" | "hover",
+    x: number,
+    y: number,
+  ) {
+    events.push({
+      kind,
+      t_ms: tNow(),
+      x,
+      y,
+      step_index: stepIndex,
+      note: step.note,
+      no_zoom: step.no_zoom,
+      synthetic: true,
+    });
+  }
 
   switch (step.action) {
     case "navigate": {
@@ -280,34 +375,37 @@ async function executeStep(page: Page, step: PlanStep, stepIndex: number): Promi
         await safeWait(step.expected_duration_ms);
         break;
       }
+      const center = await resolveCenter(step.selector);
       try {
-        // Move slowly so the cursor poll captures intermediate positions.
-        const handle = await page.$(step.selector);
-        if (handle) {
-          const box = await handle.boundingBox();
-          if (box) {
-            const target_x = box.x + box.width / 2;
-            const target_y = box.y + box.height / 2;
-            // principle 4: anticipation — slow approach so cursor reads as decided.
-            await page.mouse.move(target_x, target_y, { steps: 24 });
-            // hold before clicking; recorder layer also adds artificial settle.
-            await safeWait(200);
-            await page.mouse.click(target_x, target_y);
-          } else {
-            await page.click(step.selector, { timeout: 5000 });
-          }
+        if (center) {
+          // principle 4: anticipation — slow approach so cursor reads as decided.
+          await page.mouse.move(center.x, center.y, { steps: 24 });
+          await safeWait(200);
+          await page.mouse.click(center.x, center.y);
         } else {
           await page.click(step.selector, { timeout: 5000 });
         }
       } catch {
         // selector not found; record but don't abort
       }
-      // remaining hold is the "post-action read" budget (principle 1)
+      // The DOM "click" listener will already emit a click event with x/y,
+      // and we attach step metadata to whichever click event lands closest
+      // (post-pass below). Remaining hold is the "post-action read" budget.
       await safeWait(Math.max(0, step.expected_duration_ms - 200 - 50));
       break;
     }
     case "type": {
+      // Move the mouse to the target field so the cursor visually lands
+      // there, emit a synthetic "type" event for auto-zoom, then focus +
+      // type. We use page.focus (not page.click) to avoid emitting a
+      // DOM-listener click that would confuse the click→step mapping.
       if (step.selector) {
+        const center = await resolveCenter(step.selector);
+        if (center) {
+          await page.mouse.move(center.x, center.y, { steps: 18 });
+          emitInteraction("type", center.x, center.y);
+        }
+        await page.focus(step.selector).catch(() => {});
         await page.fill(step.selector, "").catch(() => {});
         await page.type(step.selector, step.value ?? "", { delay: 30 });
       }
@@ -316,6 +414,8 @@ async function executeStep(page: Page, step: PlanStep, stepIndex: number): Promi
     }
     case "scroll": {
       const sel = step.selector ?? "body";
+      const center = await resolveCenter(sel);
+      if (center) emitInteraction("scroll", center.x, center.y);
       await page.evaluate((s) => {
         const el = document.querySelector(s) as HTMLElement | null;
         const target = el ?? document.scrollingElement ?? document.body;
@@ -325,7 +425,11 @@ async function executeStep(page: Page, step: PlanStep, stepIndex: number): Promi
       break;
     }
     case "hover": {
-      if (step.selector) {
+      const center = await resolveCenter(step.selector);
+      if (center) {
+        await page.mouse.move(center.x, center.y, { steps: 18 });
+        emitInteraction("hover", center.x, center.y);
+      } else if (step.selector) {
         await page.hover(step.selector, { timeout: 5000 }).catch(() => {});
       }
       await safeWait(step.expected_duration_ms);
@@ -341,6 +445,5 @@ async function executeStep(page: Page, step: PlanStep, stepIndex: number): Promi
     default:
       await safeWait(step.expected_duration_ms);
   }
-  // suppress unused-arg warning while keeping interface stable
   void stepIndex;
 }

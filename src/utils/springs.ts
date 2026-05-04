@@ -27,7 +27,13 @@ const DEFAULT_REST = 0.01;
 
 /**
  * Advance a 1D spring state by dt seconds toward `target`.
- * Returns a new state.
+ *
+ * Overshoot guard (pattern from Recordly's videoPlayback/motionSmoothing):
+ * when the target moves and existing velocity carries the spring past the
+ * new target, snap the position to target. Without this, repeated
+ * connected-pan transitions accumulate residual velocity that produces
+ * visible wobble. This is most common in cursor smoothing where the
+ * target updates ~125Hz while the spring runs at 60Hz.
  */
 export function stepSpring(
   state: SpringState,
@@ -41,6 +47,20 @@ export function stepSpring(
   const acceleration = (fSpring + fDamper) / mass;
   const newVelocity = state.velocity + acceleration * dt;
   const newPosition = state.position + newVelocity * dt;
+
+  // Detect direction reversal that would overshoot the target.
+  const wasBelow = state.position < target;
+  const isBelow = newPosition < target;
+  if (wasBelow !== isBelow) {
+    // Crossed the target during this step; clamp to prevent overshoot
+    // when the spring is overdamped. For underdamped springs, allow the
+    // natural overshoot (it's the desired bounce).
+    const dampingRatio = damping / (2 * Math.sqrt(Math.max(stiffness, 1e-6) * mass));
+    if (dampingRatio >= 1) {
+      return { position: target, velocity: 0 };
+    }
+  }
+
   return { position: newPosition, velocity: newVelocity };
 }
 

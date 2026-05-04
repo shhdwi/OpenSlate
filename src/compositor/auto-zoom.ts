@@ -105,6 +105,24 @@ export interface ResolveZoomOptions {
   viewport_height: number;
 }
 
+/**
+ * Event kinds that can trigger an auto-zoom. Clicks are the canonical
+ * trigger; type/scroll/hover are also zoom-eligible so demos zoom on
+ * EVERY interactive action — typing into a field zooms to the field,
+ * scrolling zooms to the scrolled area, hovering zooms to the hovered
+ * element. This is the "plan and zoom on every action" behavior.
+ *
+ * The connected-pan logic naturally merges close-in-time events so a
+ * type-after-click sequence stays in one sustained zoom rather than
+ * popping in and out.
+ */
+const ZOOM_ELIGIBLE_KINDS = new Set<RecordedEvent["kind"]>([
+  "click",
+  "type",
+  "scroll",
+  "hover",
+]);
+
 export function resolveZoomEnvelopes(
   events: RecordedEvent[],
   profile: AutoZoomProfile,
@@ -116,7 +134,7 @@ export function resolveZoomEnvelopes(
   const envelopes: ZoomEnvelope[] = [];
 
   for (const [i, ev] of events.entries()) {
-    if (ev.kind !== "click") continue;
+    if (!ZOOM_ELIGIBLE_KINDS.has(ev.kind)) continue;
     if (ev.no_zoom) continue;
 
     // Convert viewport pixels → normalized [0,1].

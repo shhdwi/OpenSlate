@@ -57,6 +57,49 @@ The user's words map to one of these:
 
 Same toolset for all three; different `pacing` cap and different export preset.
 
+## Default mode: browser (web)
+
+openSlate v1 captures **web pages via Playwright headless Chromium**. The
+default `capture.target` in every project is `browser_desktop`. There is no
+native (non-browser) capture path in v1; if the user asks to "demo their
+desktop app," explain that v1 is browser-only and ask for the dev server URL
+of the web view.
+
+For mobile-viewport demos, set `capture.target: "browser_mobile"` (390×844)
+and `frame.style: "phone_minimal"`. The two MUST agree — the validator
+will refuse mismatched combinations.
+
+## Zoom on every action
+
+**Every interactive step gets a zoom by default.** Click, type, scroll, hover
+— each emits a zoom-eligible event when executed. The connected-pan logic
+merges close-in-time events (within 1350ms) into one sustained zoom that
+smoothly pans the focal point between targets — no zoom-out → zoom-in jitter.
+
+So for a typical signup flow (click email → type email → click password →
+type password), you'll get **one continuous zoom** that holds across all
+four steps, with the focal smoothly interpolating between the email field
+and the password field.
+
+You don't need to set `no_zoom: true` on type/scroll/hover steps to "preserve
+restraint" — the connected-pan logic + the `skip_if_within_ms` guard
+handle this. Only use `no_zoom: true` for genuinely zoom-unworthy clicks
+(closing a dropdown, dismissing a modal that's not the protagonist).
+
+## Auto-trim of the page-load period
+
+The recorder automatically trims the page-load / settle period off the head
+of the output. The output's t=0 is set to **800ms before the first
+interactive event** — just enough lead-in for the cursor to enter and the
+viewer to register the page before action starts.
+
+This means: even though `record_execute` may take 8–15s on a hosted page
+(network load + post-nav settle + actual demo), the rendered mp4 is only
+the last ~6–8s of that — the part that's actually interesting.
+
+You don't need to do anything for this; it's automatic. Don't try to "save"
+on the navigate step's `expected_duration_ms` — it gets trimmed anyway.
+
 ## Workflow
 
 ### Step 1 — Understand what to demo

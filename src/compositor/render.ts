@@ -108,7 +108,16 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
   const compositionId = "polish";
   const [width, height] = opts.preset.dimensions;
   const fps = opts.preset.fps ?? opts.manifest.fps;
-  const totalDurationMs = opts.manifest.duration_ms + (opts.profile.outro.duration_ms ?? 0);
+  // Honor manifest.start_offset_ms — recorder-trimmed page-load period
+  // is excluded from the visible output.
+  const visibleRecordingMs =
+    opts.manifest.duration_ms - (opts.manifest.start_offset_ms ?? 0);
+  const fullDurationMs = visibleRecordingMs + (opts.profile.outro.duration_ms ?? 0);
+  // Honor preset.duration_max_s — readme_hero gifs are capped at 6s, etc.
+  const totalDurationMs =
+    opts.preset.duration_max_s != null
+      ? Math.min(fullDurationMs, opts.preset.duration_max_s * 1000)
+      : fullDurationMs;
   const durationInFrames = Math.ceil((totalDurationMs / 1000) * fps);
 
   const composition = await selectComposition({
