@@ -65,8 +65,21 @@ export interface CursorProfile {
   click_bounce: CursorClickBounce;
   /** principle: anticipation — cursor arrives, holds, then clicks */
   pre_click_settle_ms: number;
+  /**
+   * Cursor size as a multiplier of the base 28px arrow at 1080p output.
+   * 1.0 = 28px (Recordly parity); 1.25 = 35px (default — slightly larger
+   * for stronger read on 4K monitors and dense product UIs); 1.5+ for
+   * social/walkthrough demos where the cursor needs to dominate.
+   */
   size_multiplier: number;
   style: "system_macos" | "system_windows" | "minimal_dot";
+  /**
+   * Contextual cursor swapping. When ON (default for `system_macos`),
+   * the renderer picks a sprite from the kind sampled at recording time
+   * (arrow / pointer / text / grab / not-allowed). When OFF, the arrow
+   * sprite is used at all times. `minimal_dot` style ignores this.
+   */
+  contextual_swap: boolean;
   /** principle: arcs — v1 = 0 (straight); v1.5 will introduce subtle bezier curvature */
   path_arc_amount: number;
 }

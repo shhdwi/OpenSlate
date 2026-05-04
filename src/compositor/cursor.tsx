@@ -11,17 +11,22 @@
  * - The cursor is positioned via percentage of the scene so it lands on
  *   the right pixel regardless of how the scene is scaled to fit the frame.
  *
- * SVG anchor: the arrow tip is at SVG (0,0), so positioning the div at
- * (x%, y%) puts the click point exactly at (x, y) in viewport coords.
+ * Sprite + hotspot model (v1.2):
+ * - For `system_macos` style with contextual swap, we render Recordly's
+ *   sprite for the sampled cursor kind (arrow/pointer/text/grab/not-allowed).
+ * - Each sprite has a hotspot — the pixel that should land on the click
+ *   point. We pre-translate the wrapping div by -hotspotX% / -hotspotY%
+ *   so positioning the div at (x%, y%) lands the hotspot on (x, y).
  *
- * principle 3 (mass_and_weight): cursor light, ~20px on 1080p output
+ * principle 3 (mass_and_weight): cursor light, ~35px on 1080p output (1.25x of 28)
  * principle 6 (squash_and_stretch): click_bounce
  * principle 7 (follow_through): motion blur trail at high speeds
  */
 
 import React from "react";
+import { staticFile } from "remotion";
 import type { CursorProfile } from "../core/types.js";
-import type { RecordedEvent } from "../recorder/events.js";
+import type { CursorKind, RecordedEvent } from "../recorder/events.js";
 import { applyEase } from "../utils/easings.js";
 
 export interface CursorRenderProps {
@@ -40,7 +45,36 @@ export interface CursorRenderProps {
   events: RecordedEvent[];
   t_ms: number;
   profile: CursorProfile;
+  /** contextual cursor kind (resolved by the composition from cursor.json) */
+  kind?: CursorKind;
 }
+
+/**
+ * Per-sprite hotspot — the pixel that should land on the click point,
+ * in 0..1 normalized to the source SVG bounds. Numbers come straight
+ * from Recordly's filename convention: e.g. `pointer-1__34-24.svg`
+ * → hotspot at (34/100, 24/100) of the trimmed sprite.
+ */
+const SPRITE_HOTSPOTS: Record<CursorKind, { x: number; y: number }> = {
+  arrow: { x: 0.34, y: 0.24 },
+  pointer: { x: 0.39, y: 0.26 },
+  text: { x: 0.5, y: 0.5 },
+  grab: { x: 0.5, y: 0.5 },
+  "not-allowed": { x: 0.23, y: 0.0 },
+};
+
+/**
+ * Per-sprite size scale — Recordly's macOS sprites have varying intrinsic
+ * sizes. We normalize so all kinds visually match the arrow at the same
+ * size_multiplier. Tuned by eye against the rendered output.
+ */
+const SPRITE_SIZE_SCALE: Record<CursorKind, number> = {
+  arrow: 1.0,
+  pointer: 1.0,
+  text: 0.85,
+  grab: 1.0,
+  "not-allowed": 1.0,
+};
 
 /**
  * Cursor sway calibration.
@@ -49,6 +83,10 @@ export interface CursorRenderProps {
  *   - Vertical motion contributes 65% of horizontal (subtle bias)
  *   - Max rotation π/18 (10°), scaled here to ~12° for a touch more visceral
  *     read at our 28px size
+ *
+ * Sway is suppressed for non-arrow kinds — rotating an I-beam or hand
+ * sprite reads as broken. Arrow is the only sprite with a tip at SVG (0,0)
+ * that benefits from leaning.
  */
 const SWAY_SPEED_REF_PX_PER_S = 1400;
 const SWAY_MAX_DEG = 12;
@@ -65,6 +103,7 @@ export const Cursor: React.FC<CursorRenderProps> = ({
   events,
   t_ms,
   profile,
+  kind = "arrow",
 }) => {
   if (!profile.visible) return null;
 
@@ -105,10 +144,9 @@ export const Cursor: React.FC<CursorRenderProps> = ({
       )
     : 0;
 
-  // Default 28px cursor on 1080p output. Recordly uses 28 as their dotRadius
-  // baseline; matches the macOS arrow at retina equivalents and reads
-  // clearly without dominating the frame.
-  const size = 28 * profile.size_multiplier;
+  // Default 28px arrow at size_multiplier=1; default profile is 1.25x → 35px.
+  const baseSize = 28;
+  const size = baseSize * profile.size_multiplier * (SPRITE_SIZE_SCALE[kind] ?? 1);
 
   // Position by percentage of the scene so cursor lands correctly regardless
   // of how the scene is scaled to fit the frame chrome.
@@ -123,7 +161,16 @@ export const Cursor: React.FC<CursorRenderProps> = ({
   const directionalLean = vx + vy * SWAY_VERTICAL_WEIGHT;
   const leanMag = speed_px_per_s > 1 ? Math.abs(directionalLean) / speed_px_per_s : 0;
   const leanSign = directionalLean >= 0 ? 1 : -1;
-  const swayDeg = leanSign * leanMag * speedFactor * SWAY_MAX_DEG;
+  // Only sway the arrow. Other sprites (hand, I-beam, grab) look wrong rotated.
+  const swayDeg = kind === "arrow" ? leanSign * leanMag * speedFactor * SWAY_MAX_DEG : 0;
+
+  // The sprite hotspot is normalized 0..1 of the sprite bbox. We want the
+  // hotspot to land at (left_pct, top_pct), so we offset the inner sprite
+  // by -hotspot * size in pixels. Outer div is positioned via pct, inner
+  // <img> is offset by px so the hotspot anchor is exact.
+  const hotspot = SPRITE_HOTSPOTS[kind] ?? SPRITE_HOTSPOTS.arrow;
+  const offsetX = -hotspot.x * size;
+  const offsetY = -hotspot.y * size;
 
   return (
     <div
@@ -131,11 +178,10 @@ export const Cursor: React.FC<CursorRenderProps> = ({
         position: "absolute",
         left: `${left_pct}%`,
         top: `${top_pct}%`,
-        width: size,
-        height: size,
-        // Pivot transforms (bounce + sway) around the tip — the cursor's
-        // logical anchor point. Ordering: rotate first, then scale, both
-        // applied around the tip.
+        width: 0,
+        height: 0,
+        // Pivot transforms (bounce + sway) around the hotspot — the cursor's
+        // logical anchor point.
         transformOrigin: "0 0",
         transform: `rotate(${swayDeg}deg) scale(${bounceScale})`,
         filter: blurPx > 0 ? `blur(${blurPx}px)` : undefined,
@@ -143,66 +189,72 @@ export const Cursor: React.FC<CursorRenderProps> = ({
         pointerEvents: "none",
       }}
     >
-      <CursorIcon style={profile.style} size={size} />
+      <CursorIcon
+        style={profile.style}
+        kind={kind}
+        contextual_swap={profile.contextual_swap}
+        size={size}
+        offsetX={offsetX}
+        offsetY={offsetY}
+      />
     </div>
   );
 };
 
-const CursorIcon: React.FC<{ style: CursorProfile["style"]; size: number }> = ({ style, size }) => {
+const CursorIcon: React.FC<{
+  style: CursorProfile["style"];
+  kind: CursorKind;
+  contextual_swap: boolean;
+  size: number;
+  offsetX: number;
+  offsetY: number;
+}> = ({ style, kind, contextual_swap, size, offsetX, offsetY }) => {
   if (style === "minimal_dot") {
     return (
       <div
         style={{
+          position: "absolute",
           width: size * 0.55,
           height: size * 0.55,
           borderRadius: "50%",
           background: "rgba(0,0,0,0.85)",
           boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
-          transform: `translate(${-size * 0.275}px, ${-size * 0.275}px)`,
+          left: -size * 0.275,
+          top: -size * 0.275,
         }}
       />
     );
   }
 
-  // Cursor SVG — derived from Recordly's "Minimal Cursor.svg" (AGPL 3.0).
+  // system_macos / system_windows — render the sprite SVG. When contextual
+  // swap is off, force `arrow` so the user gets a stable pointer.
+  // Sprites resolve through Remotion's serveURL: render.ts copies them
+  // into <recording_dir>/cursors/ before bundle, and publicDir=recording_dir
+  // makes staticFile() serve them from the bundle origin.
   //
-  // ATTRIBUTION: This path data and shape come from Recordly's repository
-  // at https://github.com/webadderallorg/Recordly. See NOTICE.md at the
-  // openSlate repo root. We carry this asset in good faith for visual
-  // parity with Recordly's polish; license tension is documented openly.
-  //
-  // Geometry: SVG path tip is at (39.97, 31.88) in the source. We translate
-  // by (-39.97, -31.88) via the wrapping <g> so the tip lands at SVG (0, 0)
-  // — required by our positioning model where the cursor div's top-left
-  // corner sits at the click point.
+  // ATTRIBUTION: cursor sprite SVGs are derived from Recordly (AGPL 3.0).
+  // See NOTICE.md at the openSlate repo root.
+  const effectiveKind: CursorKind = contextual_swap ? kind : "arrow";
   return (
-    <svg
+    <img
+      src={staticFile(`cursors/${effectiveKind}.svg`)}
+      alt=""
       width={size}
       height={size}
-      // viewBox sized to fit the cursor body after the translate, with a
-      // small padding margin so the white stroke doesn't clip.
-      viewBox="-12 -12 340 360"
-      // geometricPrecision keeps the tip pixel-aligned at high zoom levels;
-      // default "auto" rounds to integer pixels which can drift the tip
-      // by 1–2 px when the scene is scaled up.
-      shapeRendering="geometricPrecision"
       style={{
+        position: "absolute",
+        left: offsetX,
+        top: offsetY,
+        width: size,
+        height: size,
         display: "block",
-        filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.35))",
+        // Drop shadow gives the cursor weight against light/dark backgrounds
+        // both — avoids the "floating sticker" look.
+        filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.35))",
+        // Without this, the SVG can render rounded by chromium's image
+        // smoothing and the tip drifts 1-2px off the click point.
+        imageRendering: "crisp-edges",
       }}
-    >
-      <g transform="translate(-39.9744, -31.8759)">
-        <path
-          d="M39.9744 31.8759C38.2182 23.4825 47.2034 16.9545 54.6432 21.2183L351.11 191.127C358.653 195.45 357.401 206.692 349.09 209.248L205.199 253.511C202.971 254.196 201.054 255.643 199.785 257.599L127.77 368.534C122.94 375.973 111.523 373.84 109.707 365.158L39.9744 31.8759Z"
-          fill="#000000"
-        />
-        <path
-          d="M346.169 199.749L202.277 244.012C197.821 245.383 193.988 248.277 191.449 252.188L119.434 363.121L49.7012 29.8407L346.169 199.749Z"
-          stroke="white"
-          strokeWidth="19.8759"
-          fill="none"
-        />
-      </g>
-    </svg>
+    />
   );
 };

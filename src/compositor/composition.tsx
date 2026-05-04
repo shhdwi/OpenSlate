@@ -96,6 +96,20 @@ export const PolishComposition: React.FC<CompositionProps> = ({
     return resolveSpringTrajectory(arced, profile.cursor.smoothing, fps);
   }, [visibleCursorSamples, profile.cursor.smoothing, profile.cursor.path_arc_amount, fps]);
 
+  // Kind is sampled (not springed): take the most recent sample at or
+  // before current t_ms. Hard-swap behavior — the cursor changes shape
+  // the instant the page would have changed it natively. Falls back to
+  // "arrow" for older recordings without `kind` per sample.
+  const currentCursorKind = React.useMemo(() => {
+    if (!profile.cursor.contextual_swap) return "arrow" as const;
+    let kind: CursorSample["kind"] = "arrow";
+    for (const s of visibleCursorSamples) {
+      if (s.t_ms > t_ms) break;
+      if (s.kind) kind = s.kind;
+    }
+    return kind ?? "arrow";
+  }, [visibleCursorSamples, t_ms, profile.cursor.contextual_swap]);
+
   const zoom = zoomStateAt(t_ms, zoomEnvelopes, profile.auto_zoom);
 
   // ── Camera transform via Recordly's progress-blended formulation. ─────
@@ -284,6 +298,7 @@ export const PolishComposition: React.FC<CompositionProps> = ({
               events={visibleEvents}
               t_ms={t_ms}
               profile={profile.cursor}
+              kind={currentCursorKind}
             />
             {/* Click highlight is in-stage so it tracks the recording
                 under any frame size or zoom transform. */}

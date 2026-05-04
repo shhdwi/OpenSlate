@@ -84,6 +84,34 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     path.join(opts.recording_dir, opts.manifest.cursor_file),
   );
 
+  // Copy the cursor sprites into the recording's publicDir under cursors/.
+  // The composition references them via staticFile("cursors/<kind>.svg"),
+  // which resolves through Remotion's bundle origin — same path layout
+  // we use for frames. We resolve the source dir relative to the
+  // Remotion entry path: alongside it we expect a cursor-sprites/ folder
+  // (shipped via tsup's onSuccess copy), or the dev source path.
+  const spritesSrcCandidates = [
+    path.resolve(path.dirname(entryPath), "./cursor-sprites"),
+    path.resolve(path.dirname(entryPath), "../compositor/cursor-sprites"),
+    path.resolve(dirname, "../../src/compositor/cursor-sprites"),
+    path.resolve(dirname, "./cursor-sprites"),
+  ];
+  let spritesSrc: string | null = null;
+  for (const c of spritesSrcCandidates) {
+    if (await fileExists(c)) {
+      spritesSrc = c;
+      break;
+    }
+  }
+  if (spritesSrc) {
+    const cursorsDir = path.join(opts.recording_dir, "cursors");
+    await fs.mkdir(cursorsDir, { recursive: true });
+    for (const f of await fs.readdir(spritesSrc)) {
+      if (!f.endsWith(".svg")) continue;
+      await fs.copyFile(path.join(spritesSrc, f), path.join(cursorsDir, f));
+    }
+  }
+
   // Frames live in opts.recording_dir/frames. We pass the recording dir as
   // Remotion's publicDir so the bundle serves frames at its own origin —
   // sidesteps Chromium's file:// scheme restrictions during render.

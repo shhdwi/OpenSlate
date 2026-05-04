@@ -39,8 +39,18 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     // produces clear "click happened" feedback without being cartoony.
     click_bounce: { scale: [0.85, 1.0], duration_ms: 260, ease: "back_out" },
     pre_click_settle_ms: 200, // principle 4
-    size_multiplier: 1.0,
+    // Default 1.25x (= 35px on 1080p). At 1.0 (28px, Recordly parity) the
+    // cursor reads as "video player overlay"; 1.25 reads as "real macOS
+    // cursor on a 4K monitor" without dominating the frame. Override per
+    // project for social_vertical (1.5+) where the cursor competes with
+    // chrome on small screens.
+    size_multiplier: 1.25,
     style: "system_macos",
+    // Contextual cursor swap on by default — pointer over links, I-beam
+    // over text fields, grab over draggables, etc. Recorded directly from
+    // the page via getComputedStyle(elementFromPoint).cursor, so the
+    // sprite always matches what the user would have seen natively.
+    contextual_swap: true,
     // principle 5 (arcs): subtle upward bezier on long cursor traversals.
     path_arc_amount: 0.12,
   },

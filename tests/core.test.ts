@@ -7,6 +7,7 @@ import { resolveZoomEnvelopes, zoomStateAt } from "../src/compositor/auto-zoom.j
 import { suggestZooms } from "../src/compositor/zoom-suggestions.js";
 import { injectArcWaypoints } from "../src/utils/springs.js";
 import { renderInitTemplate } from "../src/config/init-template.js";
+import { mapCssCursor } from "../src/recorder/playwright.js";
 
 describe("polish profile schema", () => {
   it("default profile validates", () => {
@@ -385,6 +386,16 @@ describe("init-template drift protection", () => {
     const tpl = renderInitTemplate();
     expect(tpl).toMatch(/scale:\s*1\.4/);
   });
+
+  it("includes contextual_swap (cursor sprite swap setting)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/contextual_swap:\s*true/);
+  });
+
+  it("default cursor size_multiplier serialized as 1.25", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/size_multiplier:\s*1\.25/);
+  });
 });
 
 describe("polish profile schema — full-coverage validation", () => {
@@ -554,5 +565,92 @@ describe("connected-pan focal interpolation", () => {
     // Monotonic increase in x during the pan phase.
     expect(f1800.focal_x).toBeGreaterThan(f1500.focal_x);
     expect(f2100.focal_x).toBeGreaterThanOrEqual(f1800.focal_x);
+  });
+});
+
+describe("contextual cursor swap (CSS-cursor → sprite kind)", () => {
+  it("maps pointer/hand to pointer", () => {
+    expect(mapCssCursor("pointer")).toBe("pointer");
+    expect(mapCssCursor("hand")).toBe("pointer");
+  });
+
+  it("maps text and vertical-text to text (I-beam)", () => {
+    expect(mapCssCursor("text")).toBe("text");
+    expect(mapCssCursor("vertical-text")).toBe("text");
+  });
+
+  it("maps grab/grabbing/move to grab", () => {
+    expect(mapCssCursor("grab")).toBe("grab");
+    expect(mapCssCursor("grabbing")).toBe("grab");
+    expect(mapCssCursor("move")).toBe("grab");
+    expect(mapCssCursor("all-scroll")).toBe("grab");
+  });
+
+  it("maps not-allowed and no-drop to not-allowed", () => {
+    expect(mapCssCursor("not-allowed")).toBe("not-allowed");
+    expect(mapCssCursor("no-drop")).toBe("not-allowed");
+  });
+
+  it("collapses default/auto/unrecognized to arrow", () => {
+    expect(mapCssCursor("default")).toBe("arrow");
+    expect(mapCssCursor("auto")).toBe("arrow");
+    expect(mapCssCursor("crosshair")).toBe("arrow"); // not in v1 set
+    expect(mapCssCursor("col-resize")).toBe("arrow"); // not in v1 set
+    expect(mapCssCursor(undefined)).toBe("arrow");
+    expect(mapCssCursor("")).toBe("arrow");
+  });
+
+  it("ignores leading url(...) custom cursors and reads the fallback keyword", () => {
+    // Browsers serialize `cursor: url(/x.svg) 5 5, pointer` exactly that way;
+    // we should treat the keyword `pointer` as the effective kind.
+    expect(mapCssCursor("url(/x.svg) 5 5, pointer")).toBe("pointer");
+    expect(mapCssCursor("url('https://e.x/c.svg'), text")).toBe("text");
+  });
+
+  it("default profile enables contextual_swap and ships valid sprite list", () => {
+    expect(DEFAULT_POLISH_PROFILE.cursor.contextual_swap).toBe(true);
+    // Validate via schema as the canonical contract.
+    expect(() => parsePolishProfile(DEFAULT_POLISH_PROFILE)).not.toThrow();
+  });
+
+  it("contextual_swap can be turned off without breaking schema", () => {
+    expect(() =>
+      parsePolishProfile({
+        ...DEFAULT_POLISH_PROFILE,
+        cursor: { ...DEFAULT_POLISH_PROFILE.cursor, contextual_swap: false },
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("cursor size customization", () => {
+  it("default size_multiplier is 1.25 (slightly larger than Recordly's 1.0)", () => {
+    expect(DEFAULT_POLISH_PROFILE.cursor.size_multiplier).toBe(1.25);
+  });
+
+  it("accepts custom multipliers in 0.5..3 range", () => {
+    for (const m of [0.5, 1, 1.4, 2, 3]) {
+      expect(() =>
+        parsePolishProfile({
+          ...DEFAULT_POLISH_PROFILE,
+          cursor: { ...DEFAULT_POLISH_PROFILE.cursor, size_multiplier: m },
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it("rejects size_multiplier out of range", () => {
+    expect(() =>
+      parsePolishProfile({
+        ...DEFAULT_POLISH_PROFILE,
+        cursor: { ...DEFAULT_POLISH_PROFILE.cursor, size_multiplier: 0.1 },
+      }),
+    ).toThrow();
+    expect(() =>
+      parsePolishProfile({
+        ...DEFAULT_POLISH_PROFILE,
+        cursor: { ...DEFAULT_POLISH_PROFILE.cursor, size_multiplier: 5 },
+      }),
+    ).toThrow();
   });
 });

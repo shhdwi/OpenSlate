@@ -29,11 +29,13 @@ implementations in openSlate are independent (clean-room) reimplementations:
 These are functional/mathematical patterns and calibrated numbers.
 Patterns and individual numbers are not copyrightable.
 
-## Asset: minimal cursor SVG
+## Asset: cursor sprite set
 
-The file `src/assets/cursors/minimal-cursor.svg` and the inlined cursor
-path data in `src/compositor/cursor.tsx` are derived from Recordly's
-`Minimal Cursor.svg` (AGPL 3.0).
+The cursor SVG files in `src/compositor/cursor-sprites/` (`arrow.svg`,
+`pointer.svg`, `text.svg`, `grab.svg`, `not-allowed.svg`) and the legacy
+inlined cursor path data in earlier revisions of `src/compositor/cursor.tsx`
+are derived from Recordly's macOS cursor sprite set (AGPL 3.0,
+`src/assets/cursors/macos/{pointer,pointinghand,ibeam,openhand,notallowed}.svg`).
 
 This is a creative work and Recordly's AGPL 3.0 license normally requires
 derivative distributions to be relicensed under AGPL 3.0. openSlate's

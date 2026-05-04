@@ -71,6 +71,7 @@ const cursorSchema = z.object({
   pre_click_settle_ms: z.number().min(0).max(800),
   size_multiplier: z.number().min(0.5).max(3),
   style: z.enum(["system_macos", "system_windows", "minimal_dot"]),
+  contextual_swap: z.boolean().default(true),
   path_arc_amount: z.number().min(0).max(0.5),
 });
 

@@ -39,12 +39,29 @@ export interface RecordedEvent {
   synthetic?: boolean;
 }
 
+/**
+ * The contextual cursor kind at a point in time. Mirrors the meaningful
+ * subset of CSS `cursor` values, mapped to the sprite set we ship.
+ *
+ * Sampled at recording time via `getComputedStyle(elementFromPoint).cursor`
+ * — i.e., the page tells us the cursor it would have shown natively. The
+ * compositor then renders the matching sprite. This is how Recordly does
+ * contextual cursor swapping (arrow→hand on links, I-beam over text fields,
+ * etc.) but we read it directly from the DOM instead of polling the OS.
+ */
+export type CursorKind = "arrow" | "pointer" | "text" | "grab" | "not-allowed";
+
 export interface CursorSample {
   /** ms from start of recording */
   t_ms: number;
   /** viewport-space pixel coordinates */
   x: number;
   y: number;
+  /**
+   * Contextual cursor kind at this sample. Optional for backward
+   * compatibility — older recordings without this field render as "arrow".
+   */
+  kind?: CursorKind;
 }
 
 export interface RecordingManifest {

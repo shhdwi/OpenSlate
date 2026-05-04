@@ -23,7 +23,52 @@ import { type Browser, type BrowserContext, type Page, chromium } from "playwrig
 import type { CaptureProfile } from "../core/types.js";
 import type { DemoPlan, PlanStep } from "../plan/types.js";
 import { ensureDir, recordingDir, type ProjectPaths } from "../utils/paths.js";
-import type { CursorSample, RecordedEvent, RecordingManifest } from "./events.js";
+import type { CursorKind, CursorSample, RecordedEvent, RecordingManifest } from "./events.js";
+
+/**
+ * Map a CSS `cursor` keyword to the sprite kind we ship. We collapse the
+ * full CSS cursor vocabulary into 5 kinds because anything finer (zoom-in,
+ * crosshair, col-resize, ...) hits diminishing returns for product demos.
+ *
+ * - pointer / hand → "pointer" (links, buttons)
+ * - text / vertical-text → "text" (text fields, contenteditable)
+ * - grab / grabbing / move / all-scroll → "grab" (drag handles, draggable)
+ * - not-allowed / no-drop → "not-allowed" (disabled state)
+ * - everything else → "arrow"
+ *
+ * `cursor: url(...)` (custom cursors) collapses to "arrow" — Recordly's
+ * sprite set is what we render, not the page's custom URL.
+ */
+export function mapCssCursor(css: string | undefined): CursorKind {
+  if (!css) return "arrow";
+  // Strip url(...) prefix, take the first non-url keyword.
+  // e.g. "url(/foo.svg) 5 5, pointer" → "pointer"
+  const cleaned = css
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => !s.startsWith("url("))
+    .join(",");
+  const keyword = cleaned.split(",")[0]?.trim().toLowerCase() ?? "";
+  switch (keyword) {
+    case "pointer":
+    case "hand":
+      return "pointer";
+    case "text":
+    case "vertical-text":
+    case "ibeam":
+      return "text";
+    case "grab":
+    case "grabbing":
+    case "move":
+    case "all-scroll":
+      return "grab";
+    case "not-allowed":
+    case "no-drop":
+      return "not-allowed";
+    default:
+      return "arrow";
+  }
+}
 
 export interface RecordOptions {
   plan: DemoPlan;
@@ -86,15 +131,27 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     y?: number;
     target?: string;
     value?: string;
+    /** CSS cursor at the sample point (e.g. "pointer", "text", "default") */
+    css_cursor?: string;
   };
   await page.exposeBinding("__openslate_emit", (_src, payload: EmittedPayload) => {
     const t = tNow();
     if (payload.kind === "cursor_move") {
-      cursorSamples.push({ t_ms: t, x: payload.x ?? 0, y: payload.y ?? 0 });
+      cursorSamples.push({
+        t_ms: t,
+        x: payload.x ?? 0,
+        y: payload.y ?? 0,
+        kind: mapCssCursor(payload.css_cursor),
+      });
       return;
     }
     if (payload.kind === "click") {
-      cursorSamples.push({ t_ms: t, x: payload.x ?? 0, y: payload.y ?? 0 });
+      cursorSamples.push({
+        t_ms: t,
+        x: payload.x ?? 0,
+        y: payload.y ?? 0,
+        kind: mapCssCursor(payload.css_cursor),
+      });
     }
     events.push({ ...(payload as RecordedEvent), t_ms: t });
   });
@@ -109,6 +166,22 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
       if (!w.__openslate_emit) return;
       w.__openslate_lastMove = 0;
 
+      // Read the *effective* CSS cursor at (x,y) — i.e., what the browser
+      // would have drawn natively. elementFromPoint resolves the topmost
+      // element under the point; getComputedStyle.cursor gives us
+      // "pointer", "text", "grab", "not-allowed", "default", etc.
+      // Lightweight (~0.1ms per call) and runs at the throttled cadence,
+      // so the page-perf overhead is negligible.
+      function readCursorAt(x: number, y: number): string {
+        try {
+          const el = document.elementFromPoint(x, y);
+          if (!el) return "default";
+          return getComputedStyle(el).cursor || "default";
+        } catch {
+          return "default";
+        }
+      }
+
       // Cursor stream — direct binding, throttled on the page side.
       document.addEventListener(
         "mousemove",
@@ -121,6 +194,7 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
             kind: "cursor_move",
             x: e.clientX,
             y: e.clientY,
+            css_cursor: readCursorAt(e.clientX, e.clientY),
           });
         },
         { capture: true, passive: true },
@@ -136,6 +210,7 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
             x: e.clientX,
             y: e.clientY,
             target: target ? cssPath(target) : undefined,
+            css_cursor: readCursorAt(e.clientX, e.clientY),
           });
         },
         { capture: true },
@@ -181,6 +256,7 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     t_ms: 0,
     x: -200,
     y: -200,
+    kind: "arrow",
   });
 
   // Apply browser zoom (capture.browser_zoom) on every page load via an
