@@ -245,46 +245,69 @@ export const PolishComposition: React.FC<CompositionProps> = ({
 
       {/* L2 + L3 + L4 + L5: Frame chrome wrapping a single SCENE group that
           contains the recording AND the cursor in shared viewport coords.
+          The scene group has the SAME aspect ratio as the recording so
+          cursor % positioning maps directly to recording pixels — no
+          letterbox-induced drift. Frame's content area centers the scene
+          via flex; any extra space on the sides shows the chromeBg.
           Auto-zoom transforms the whole group, so cursor stays glued to
           the right pixel of the recording during zoom. */}
       <Frame profile={profile.frame} layout={profile.layout} brand={profile.brand}>
         <div
+          // Outer flex centerer — fills the frame's content area, centers
+          // the scene group horizontally and vertically. Lets the scene
+          // group take its aspect-determined size.
           style={{
             position: "absolute",
             inset: 0,
-            transform: sceneTransform,
-            transformOrigin: "0 0",
-            willChange: "transform",
-            overflow: "hidden",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
           }}
         >
-          <Img
-            src={sourceFrameUrl}
-            // contain (not cover) so nothing on the recording is cropped
-            // by the browser frame's content-area aspect mismatch. The
-            // background of the inner content area shows through any
-            // letterbox bars; theme-tuned in frame.tsx so it blends.
+          <div
             style={{
-              width: "100%",
+              // Scene group has recording's aspect ratio. With this, the
+              // cursor at left:50% top:50% lines up with the recording's
+              // center pixel — no letterbox drift.
+              aspectRatio: `${viewport_w} / ${viewport_h}`,
+              // Take all available height; width auto-sized by aspect ratio.
+              // If frame content is wider than recording aspect, this
+              // height-bounds the scene; horizontal margin shows chromeBg.
               height: "100%",
-              objectFit: "contain",
-              display: "block",
+              maxWidth: "100%",
+              position: "relative",
+              transform: sceneTransform,
+              transformOrigin: "0 0",
+              willChange: "transform",
+              overflow: "hidden",
             }}
-          />
-          {/* Cursor lives inside the scene; positioned in viewport % so it
-              tracks the recording under any frame size or zoom transform. */}
-          <Cursor
-            x={cur.x}
-            y={cur.y}
-            vx={cur.vx ?? 0}
-            vy={cur.vy ?? 0}
-            viewport_width={viewport_w}
-            viewport_height={viewport_h}
-            speed_px_per_s={cur.speed_px_per_s ?? 0}
-            events={visibleEvents}
-            t_ms={t_ms}
-            profile={profile.cursor}
-          />
+          >
+            <Img
+              src={sourceFrameUrl}
+              style={{
+                width: "100%",
+                height: "100%",
+                // Now that scene group matches recording aspect, cover/fill
+                // both work the same — recording occupies 100% of scene
+                // with no letterbox.
+                objectFit: "fill",
+                display: "block",
+              }}
+            />
+            {/* Cursor at % of scene group, which equals % of recording. */}
+            <Cursor
+              x={cur.x}
+              y={cur.y}
+              vx={cur.vx ?? 0}
+              vy={cur.vy ?? 0}
+              viewport_width={viewport_w}
+              viewport_height={viewport_h}
+              speed_px_per_s={cur.speed_px_per_s ?? 0}
+              events={visibleEvents}
+              t_ms={t_ms}
+              profile={profile.cursor}
+            />
+          </div>
         </div>
       </Frame>
 

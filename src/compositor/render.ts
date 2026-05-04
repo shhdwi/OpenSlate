@@ -180,11 +180,15 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
 }
 
 /**
- * Two-pass GIF encoding: first pass generates an optimal 256-color palette
- * weighted by frame statistics; second pass uses that palette with Bayer
- * dithering to produce significantly cleaner output than ffmpeg's default
- * single-pass encoder (especially on gradient backgrounds, where single-pass
- * produces visible diagonal banding).
+ * Two-pass GIF encoding tuned for max quality:
+ *  - palettegen with stats_mode=full analyzes every frame
+ *  - paletteuse with floyd_steinberg dither (better fidelity than bayer,
+ *    minimal file-size penalty in practice)
+ *  - lanczos scaling preserves text legibility on downscale
+ *
+ * For text-heavy demos at 800×480, palette quantization made text
+ * illegible. At 1280×720 with floyd_steinberg, gifs read near-mp4
+ * quality on dense product UIs.
  */
 async function convertMp4ToGif(
   src: string,
@@ -193,7 +197,7 @@ async function convertMp4ToGif(
 ): Promise<void> {
   const palettePath = `${src}.palette.png`;
   const filtersPaletteGen = `fps=${opts.fps},scale=${opts.width}:${opts.height}:flags=lanczos,palettegen=stats_mode=full`;
-  const filtersUse = `fps=${opts.fps},scale=${opts.width}:${opts.height}:flags=lanczos[v];[v][1:v]paletteuse=dither=bayer:bayer_scale=5`;
+  const filtersUse = `fps=${opts.fps},scale=${opts.width}:${opts.height}:flags=lanczos[v];[v][1:v]paletteuse=dither=floyd_steinberg`;
 
   await runFfmpeg([
     "-y",

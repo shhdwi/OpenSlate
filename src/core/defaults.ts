@@ -160,10 +160,15 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     default: { format: "mp4", dimensions: [1920, 1080], bitrate_kbps: 8000 },
     readme_hero: {
       format: "gif",
-      dimensions: [800, 480],
+      // 1280×720 — README-tier resolution where text actually reads.
+      // 800×480 was too small; the downscale from 1920×1080 + palette
+      // quantization made any text in the recording illegible.
+      dimensions: [1280, 720],
       loop: true,
       duration_max_s: 6,
-      fps: 24,
+      // 30fps for smoother motion. With floyd_steinberg dithering this
+      // produces ~4-6 MB gifs that look near-mp4 quality.
+      fps: 30,
     },
     social_vertical: {
       format: "mp4",
