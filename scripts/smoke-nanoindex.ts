@@ -87,11 +87,14 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("\nRecording NanoIndex live demo tour (browser_zoom: 1.25)...");
+  console.log("\nRecording NanoIndex live demo tour...");
   const exec = await orchestrateExecute({
     plan: planResult.plan,
-    // Zoom the page 25% so dense product UI reads at 1080p output.
-    capture_override: { browser_zoom: 1.25 },
+    // No browser_zoom override — /demo's full UI fits 1280×800 natively.
+    // Setting browser_zoom > 1.0 here pushed the input field below the
+    // fold, triggering Playwright auto-scroll on click, which moved the
+    // tree off-screen at top. Auto-zoom does the visual look-closer
+    // effect during action moments without needing page-level zoom.
   });
   console.log(
     `✓ recorded ${exec.manifest.frame_count} frames · duration=${exec.manifest.duration_ms}ms · trim=${exec.manifest.start_offset_ms}ms`,
