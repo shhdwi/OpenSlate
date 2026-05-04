@@ -36,7 +36,10 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     pre_click_settle_ms: 200, // principle 4
     size_multiplier: 1.0,
     style: "system_macos",
-    path_arc_amount: 0.0, // principle 5: v1 = 0; v1.5 introduces curvature
+    // principle 5 (arcs): subtle upward bezier on long cursor traversals.
+    // 0.12 = ~12% of travel distance lifted upward at the midpoint.
+    // Set 0 to disable; >0.25 starts looking cartoony.
+    path_arc_amount: 0.12,
   },
 
   // principles 2/7/8

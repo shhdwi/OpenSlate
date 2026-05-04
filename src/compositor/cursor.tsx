@@ -29,6 +29,9 @@ export interface CursorRenderProps {
   x: number;
   /** viewport-space y */
   y: number;
+  /** velocity in viewport-px/s, signed (positive x = rightward, positive y = downward) */
+  vx: number;
+  vy: number;
   /** scene viewport width — needed for pct positioning */
   viewport_width: number;
   /** scene viewport height */
@@ -39,9 +42,23 @@ export interface CursorRenderProps {
   profile: CursorProfile;
 }
 
+/**
+ * Cursor sway calibration.
+ * Pattern from Recordly's cursorSway: lean cursor toward direction of motion.
+ *   - Speed reference 1400 px/s — at this speed lean approaches max
+ *   - Vertical motion contributes 65% of horizontal (subtle bias)
+ *   - Max rotation π/18 (10°), scaled here to ~12° for a touch more visceral
+ *     read at our 28px size
+ */
+const SWAY_SPEED_REF_PX_PER_S = 1400;
+const SWAY_MAX_DEG = 12;
+const SWAY_VERTICAL_WEIGHT = 0.65;
+
 export const Cursor: React.FC<CursorRenderProps> = ({
   x,
   y,
+  vx,
+  vy,
   viewport_width,
   viewport_height,
   speed_px_per_s,
@@ -89,6 +106,16 @@ export const Cursor: React.FC<CursorRenderProps> = ({
   const left_pct = (x / viewport_width) * 100;
   const top_pct = (y / viewport_height) * 100;
 
+  // Cursor sway — lean cursor toward direction of motion. Combines
+  // horizontal + vertical velocity (vertical weighted at 65%) into a
+  // single signed scalar; clamps to ±SWAY_MAX_DEG.
+  // pattern: Recordly's cursorSway. Implemented independently per NOTICE.md.
+  const speedFactor = Math.min(1, speed_px_per_s / SWAY_SPEED_REF_PX_PER_S);
+  const directionalLean = vx + vy * SWAY_VERTICAL_WEIGHT;
+  const leanMag = speed_px_per_s > 1 ? Math.abs(directionalLean) / speed_px_per_s : 0;
+  const leanSign = directionalLean >= 0 ? 1 : -1;
+  const swayDeg = leanSign * leanMag * speedFactor * SWAY_MAX_DEG;
+
   return (
     <div
       style={{
@@ -97,9 +124,11 @@ export const Cursor: React.FC<CursorRenderProps> = ({
         top: `${top_pct}%`,
         width: size,
         height: size,
-        // Bounce around the cursor's tip (its anchor point).
+        // Pivot transforms (bounce + sway) around the tip — the cursor's
+        // logical anchor point. Ordering: rotate first, then scale, both
+        // applied around the tip.
         transformOrigin: "0 0",
-        transform: `scale(${bounceScale})`,
+        transform: `rotate(${swayDeg}deg) scale(${bounceScale})`,
         filter: blurPx > 0 ? `blur(${blurPx}px)` : undefined,
         willChange: "transform, filter",
         pointerEvents: "none",
@@ -144,6 +173,10 @@ const CursorIcon: React.FC<{ style: CursorProfile["style"]; size: number }> = ({
       // viewBox sized to fit the cursor body after the translate, with a
       // small padding margin so the white stroke doesn't clip.
       viewBox="-12 -12 340 360"
+      // geometricPrecision keeps the tip pixel-aligned at high zoom levels;
+      // default "auto" rounds to integer pixels which can drift the tip
+      // by 1–2 px when the scene is scaled up.
+      shapeRendering="geometricPrecision"
       style={{
         display: "block",
         filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.35))",

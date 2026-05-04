@@ -85,6 +85,47 @@ export interface ResolvedFrame {
   speed_px_per_s: number;
 }
 
+/**
+ * Inject midpoint waypoints between far-apart keypoints to give the cursor
+ * a slight upward arc on long traversals — principle 5 (arcs).
+ *
+ * Without this, the cursor's path between two distant points is governed
+ * only by the spring, which produces an essentially straight line with
+ * minor end-overshoot. Real cursor motion (and Disney's principle 5) calls
+ * for curved paths, especially on longer moves.
+ *
+ * Implementation: for each consecutive pair of keypoints whose Euclidean
+ * distance exceeds `min_dist_for_arc`, insert a midpoint waypoint at their
+ * temporal midpoint with the y-coordinate biased upward by
+ * `arc_amount * distance`. The spring then naturally curves through it.
+ */
+export function injectArcWaypoints(
+  keypoints: KeyPoint[],
+  arc_amount: number,
+  min_dist_for_arc = 200,
+): KeyPoint[] {
+  if (arc_amount <= 0 || keypoints.length < 2) return keypoints;
+  const out: KeyPoint[] = [];
+  for (let i = 0; i < keypoints.length; i++) {
+    const a = keypoints[i];
+    if (!a) continue;
+    out.push(a);
+    const b = keypoints[i + 1];
+    if (!b) continue;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < min_dist_for_arc) continue;
+    const t_mid = (a.t_ms + b.t_ms) / 2;
+    const x_mid = (a.x + b.x) / 2;
+    // Lift the midpoint upward (negative y) proportional to traversal
+    // distance. arc_amount=0.15 gives ~15% lift; subtle but felt.
+    const y_mid = (a.y + b.y) / 2 - dist * arc_amount;
+    out.push({ t_ms: t_mid, x: x_mid, y: y_mid });
+  }
+  return out;
+}
+
 export function resolveSpringTrajectory(
   keypoints: KeyPoint[],
   cfg: SpringConfig,

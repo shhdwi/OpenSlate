@@ -26,7 +26,7 @@ import {
 import type { PolishProfile } from "../core/types.js";
 import type { CursorSample, RecordedEvent, RecordingManifest } from "../recorder/events.js";
 import { applyEase } from "../utils/easings.js";
-import { resolveSpringTrajectory } from "../utils/springs.js";
+import { injectArcWaypoints, resolveSpringTrajectory } from "../utils/springs.js";
 import { resolveZoomEnvelopes, zoomStateAt } from "./auto-zoom.js";
 import { Background } from "./background.js";
 import { Captions } from "./captions.js";
@@ -86,15 +86,13 @@ export const PolishComposition: React.FC<CompositionProps> = ({
     [visibleEvents, profile.auto_zoom, manifest.viewport.width, manifest.viewport.height],
   );
 
-  const cursorTrajectory = React.useMemo(
-    () =>
-      resolveSpringTrajectory(
-        visibleCursorSamples.map((s) => ({ t_ms: s.t_ms, x: s.x, y: s.y })),
-        profile.cursor.smoothing,
-        fps,
-      ),
-    [visibleCursorSamples, profile.cursor.smoothing, fps],
-  );
+  const cursorTrajectory = React.useMemo(() => {
+    const raw = visibleCursorSamples.map((s) => ({ t_ms: s.t_ms, x: s.x, y: s.y }));
+    // principle 5 (arcs): inject upward bezier midpoints on long traversals.
+    // The spring's natural overshoot gives micro-arcs; this gives macro-arcs.
+    const arced = injectArcWaypoints(raw, profile.cursor.path_arc_amount ?? 0);
+    return resolveSpringTrajectory(arced, profile.cursor.smoothing, fps);
+  }, [visibleCursorSamples, profile.cursor.smoothing, profile.cursor.path_arc_amount, fps]);
 
   const zoom = zoomStateAt(t_ms, zoomEnvelopes, profile.auto_zoom);
 
@@ -152,7 +150,13 @@ export const PolishComposition: React.FC<CompositionProps> = ({
 
   // Cursor position for this frame (spring-smoothed, in viewport coords).
   const frameIndex = Math.min(cursorTrajectory.length - 1, frame);
-  const cur = cursorTrajectory[frameIndex] ?? { x: 0, y: 0, speed_px_per_s: 0 };
+  const cur = cursorTrajectory[frameIndex] ?? {
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    speed_px_per_s: 0,
+  };
 
   // Map output time → source frame using actual recording timestamps.
   // CDP screencast is delta-emitted (no frame on static pages), so a
@@ -231,6 +235,8 @@ export const PolishComposition: React.FC<CompositionProps> = ({
           <Cursor
             x={cur.x}
             y={cur.y}
+            vx={cur.vx ?? 0}
+            vy={cur.vy ?? 0}
             viewport_width={viewport_w}
             viewport_height={viewport_h}
             speed_px_per_s={cur.speed_px_per_s ?? 0}
