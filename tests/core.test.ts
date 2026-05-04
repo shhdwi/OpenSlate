@@ -7,7 +7,8 @@ import { resolveZoomEnvelopes, zoomStateAt } from "../src/compositor/auto-zoom.j
 import { suggestZooms } from "../src/compositor/zoom-suggestions.js";
 import { injectArcWaypoints } from "../src/utils/springs.js";
 import { renderInitTemplate } from "../src/config/init-template.js";
-import { mapCssCursor } from "../src/recorder/playwright.js";
+import { dropDuplicateDomClicks, mapCssCursor } from "../src/recorder/playwright.js";
+import type { RecordedEvent } from "../src/recorder/events.js";
 
 describe("polish profile schema", () => {
   it("default profile validates", () => {
@@ -392,9 +393,9 @@ describe("init-template drift protection", () => {
     expect(tpl).toMatch(/contextual_swap:\s*true/);
   });
 
-  it("default cursor size_multiplier serialized as 1.25", () => {
+  it("default cursor size_multiplier serialized as 2.5", () => {
     const tpl = renderInitTemplate();
-    expect(tpl).toMatch(/size_multiplier:\s*1\.25/);
+    expect(tpl).toMatch(/size_multiplier:\s*2\.5/);
   });
 });
 
@@ -624,8 +625,8 @@ describe("contextual cursor swap (CSS-cursor → sprite kind)", () => {
 });
 
 describe("cursor size customization", () => {
-  it("default size_multiplier is 1.25 (slightly larger than Recordly's 1.0)", () => {
-    expect(DEFAULT_POLISH_PROFILE.cursor.size_multiplier).toBe(1.25);
+  it("default size_multiplier is 2.5 (cursor-as-protagonist for product demos)", () => {
+    expect(DEFAULT_POLISH_PROFILE.cursor.size_multiplier).toBe(2.5);
   });
 
   it("accepts custom multipliers in 0.5..3 range", () => {
@@ -652,5 +653,61 @@ describe("cursor size customization", () => {
         cursor: { ...DEFAULT_POLISH_PROFILE.cursor, size_multiplier: 5 },
       }),
     ).toThrow();
+  });
+});
+
+describe("nav-click animation hold (synthetic-first click flow)", () => {
+  // The recorder emits a synthetic click BEFORE the real mouse.click() and
+  // dwells on the source page so the click bounce + halo play out against
+  // pre-nav frames. The DOM listener still fires for the real click, so
+  // we dedupe.
+  it("drops a near-duplicate DOM click after a synthetic click", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 1000, x: 200, y: 100, synthetic: true, step_index: 0 },
+      { kind: "click", t_ms: 2300, x: 205, y: 102 }, // real click 1300ms later, same spot
+    ];
+    dropDuplicateDomClicks(events);
+    expect(events).toHaveLength(1);
+    expect(events[0].synthetic).toBe(true);
+  });
+
+  it("keeps a DOM click that is too far in time", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 1000, x: 200, y: 100, synthetic: true, step_index: 0 },
+      { kind: "click", t_ms: 4000, x: 200, y: 100 }, // 3s later — outside dedupe window
+    ];
+    dropDuplicateDomClicks(events);
+    expect(events).toHaveLength(2);
+  });
+
+  it("keeps a DOM click that is too far in space", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 1000, x: 200, y: 100, synthetic: true, step_index: 0 },
+      { kind: "click", t_ms: 2000, x: 600, y: 400 }, // different region
+    ];
+    dropDuplicateDomClicks(events);
+    expect(events).toHaveLength(2);
+  });
+
+  it("does not drop two synthetic clicks", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 1000, x: 200, y: 100, synthetic: true, step_index: 0 },
+      { kind: "click", t_ms: 1500, x: 200, y: 100, synthetic: true, step_index: 1 },
+    ];
+    dropDuplicateDomClicks(events);
+    expect(events).toHaveLength(2);
+    expect(events.every((e) => e.synthetic)).toBe(true);
+  });
+
+  it("dedupes multiple synthetic→DOM pairs in sequence", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 1000, x: 100, y: 50, synthetic: true, step_index: 0 },
+      { kind: "click", t_ms: 2300, x: 100, y: 50 }, // dup of #0
+      { kind: "click", t_ms: 5000, x: 400, y: 200, synthetic: true, step_index: 1 },
+      { kind: "click", t_ms: 6300, x: 405, y: 200 }, // dup of #2
+    ];
+    dropDuplicateDomClicks(events);
+    expect(events).toHaveLength(2);
+    expect(events.every((e) => e.synthetic)).toBe(true);
   });
 });

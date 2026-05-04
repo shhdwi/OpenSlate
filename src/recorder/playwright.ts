@@ -88,6 +88,22 @@ export interface RecordResult {
 const CURSOR_THROTTLE_MS = 8;
 
 /**
+ * Pre-click dwell on the source page. After the cursor reaches the target
+ * but BEFORE the real `mouse.click()` fires, we emit a synthetic click
+ * event and hold the page steady for this duration. The renderer's click
+ * bounce + halo are anchored to the synthetic click's timestamp, so the
+ * full animation plays out against frames captured on the SOURCE page.
+ *
+ * Without this, navigation-triggering clicks unmount the source page
+ * mid-animation: the halo fires on top of the destination page, looking
+ * like a glitch. Calibrated to cover the longest tail of the click
+ * animation: CLICK_FX_DELAY_MS (250) + click_bounce.duration_ms (260) +
+ * click_highlight.duration_ms (700) ≈ 1200ms, plus a 100ms cushion so
+ * the halo is fully faded out by the time nav starts.
+ */
+const PRE_CLICK_DWELL_MS = 1300;
+
+/**
  * Minimum settle time after a page navigates and reaches networkidle, before
  * the recorder advances to the next plan step. Hosted sites often finish
  * networkidle while hero fonts/animations are still resolving, so the demo
@@ -341,10 +357,17 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   events.push({ kind: "frame_end", t_ms: tNow() });
   const totalDurationMs = tNow();
 
-  // Post-pass: attach step metadata (note, no_zoom, is_protagonist, step_index)
-  // to click events emitted by the DOM listener. We can't tag those at emit
-  // time because they come from a binding — we tag them now by step.action
-  // ordering. This makes captions in `from_steps` mode work.
+  // Post-pass 1: dedupe DOM-emitted clicks that follow synthetic clicks.
+  // The plan-driven click flow emits a synthetic click BEFORE the real
+  // mouse.click() so the renderer's animations play out on source-page
+  // frames; the real click then ALSO triggers the DOM listener, producing
+  // a near-duplicate. Drop those to avoid double-bounce / double-halo.
+  dropDuplicateDomClicks(events);
+
+  // Post-pass 2: attach step metadata (note, no_zoom, is_protagonist,
+  // step_index) to click events that arrived without it. With the
+  // synthetic-first flow, plan-driven clicks are already tagged at emit
+  // time; this only catches the rare case of a missed synthetic.
   attachStepMetadataToClicks(events, opts.plan.steps);
 
   // ── Tear down ───────────────────────────────────────────────────────────
@@ -409,6 +432,40 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2));
 
   return { recording_id: id, recording_dir: dir, manifest };
+}
+
+/**
+ * Remove DOM-listener-emitted click events that are near-duplicates of
+ * a preceding synthetic click. A synthetic click is emitted by the
+ * recorder before `page.mouse.click()` to anchor render-time animations
+ * to source-page frames; the real `mouse.click()` then also fires the
+ * DOM "click" listener, producing a duplicate. Match window: 2500ms
+ * (covers PRE_CLICK_DWELL_MS + nav settle) and 100px proximity.
+ *
+ * Exported for unit testing.
+ */
+export function dropDuplicateDomClicks(events: RecordedEvent[]): void {
+  const PROX_PX = 100;
+  const WINDOW_MS = 2500;
+  const toDrop = new Set<number>();
+  for (let i = 0; i < events.length; i++) {
+    const a = events[i];
+    if (!a || a.kind !== "click" || !a.synthetic) continue;
+    for (let j = i + 1; j < events.length; j++) {
+      const b = events[j];
+      if (!b || b.kind !== "click") continue;
+      if (b.synthetic) continue;
+      if (b.t_ms - a.t_ms > WINDOW_MS) break;
+      if (Math.abs((b.x ?? 0) - (a.x ?? 0)) > PROX_PX) continue;
+      if (Math.abs((b.y ?? 0) - (a.y ?? 0)) > PROX_PX) continue;
+      toDrop.add(j);
+    }
+  }
+  if (toDrop.size === 0) return;
+  // Splice from the end so indices stay valid.
+  for (const idx of [...toDrop].sort((a, b) => b - a)) {
+    events.splice(idx, 1);
+  }
 }
 
 /**
@@ -502,6 +559,14 @@ async function executeStep(
           // principle 4: anticipation — slow approach so cursor reads as decided.
           await page.mouse.move(center.x, center.y, { steps: 24 });
           await safeWait(200);
+          // Emit a synthetic click ANCHORED to the source-page dwell — the
+          // renderer keys click bounce + halo off this timestamp. Holding
+          // the cursor steady for PRE_CLICK_DWELL_MS afterwards lets the
+          // animation play against source-page frames before the real
+          // click triggers navigation. Without this, nav-clicks unmount
+          // the page mid-halo and the animation lands on the wrong page.
+          emitInteraction("click", center.x, center.y);
+          await safeWait(PRE_CLICK_DWELL_MS);
           await page.mouse.click(center.x, center.y);
         } else {
           await page.click(step.selector, { timeout: 5000 });
@@ -509,10 +574,13 @@ async function executeStep(
       } catch {
         // selector not found; record but don't abort
       }
-      // The DOM "click" listener will already emit a click event with x/y,
-      // and we attach step metadata to whichever click event lands closest
-      // (post-pass below). Remaining hold is the "post-action read" budget.
-      await safeWait(Math.max(0, step.expected_duration_ms - 200 - 50));
+      // The DOM "click" listener also fires for the real mouse.click above
+      // and emits a duplicate (non-synthetic) click event. We dedupe in
+      // the post-pass (dropDuplicateDomClicks) by proximity to synthetics.
+      // Remaining hold is the "post-action read" budget on the new page.
+      await safeWait(
+        Math.max(0, step.expected_duration_ms - 200 - PRE_CLICK_DWELL_MS - 50),
+      );
       break;
     }
     case "type": {

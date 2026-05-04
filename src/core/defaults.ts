@@ -39,12 +39,12 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     // produces clear "click happened" feedback without being cartoony.
     click_bounce: { scale: [0.85, 1.0], duration_ms: 260, ease: "back_out" },
     pre_click_settle_ms: 200, // principle 4
-    // Default 1.25x (= 35px on 1080p). At 1.0 (28px, Recordly parity) the
-    // cursor reads as "video player overlay"; 1.25 reads as "real macOS
-    // cursor on a 4K monitor" without dominating the frame. Override per
-    // project for social_vertical (1.5+) where the cursor competes with
-    // chrome on small screens.
-    size_multiplier: 1.25,
+    // Default 2.5x (= 70px on 1080p). User-calibrated: at 1.25 (35px) the
+    // cursor still reads as "tiny video overlay" on dense product UIs;
+    // 2.5 dominates appropriately for product demos where the cursor IS
+    // the protagonist of the shot. Override down to 1.0–1.5 for hero
+    // shots where the UI itself should dominate.
+    size_multiplier: 2.5,
     style: "system_macos",
     // Contextual cursor swap on by default — pointer over links, I-beam
     // over text fields, grab over draggables, etc. Recorded directly from
