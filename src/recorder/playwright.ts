@@ -436,11 +436,18 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
 
 /**
  * Remove DOM-listener-emitted click events that are near-duplicates of
- * a preceding synthetic click. A synthetic click is emitted by the
- * recorder before `page.mouse.click()` to anchor render-time animations
- * to source-page frames; the real `mouse.click()` then also fires the
- * DOM "click" listener, producing a duplicate. Match window: 2500ms
- * (covers PRE_CLICK_DWELL_MS + nav settle) and 100px proximity.
+ * a preceding synthetic CLICK or TYPE event. The recorder fires
+ * mouse.click() to anchor each click step (and to focus the field
+ * before typing); each fires the page-side click listener, producing
+ * a duplicate non-synthetic click. We dedupe by proximity:
+ *   - 100px in either axis
+ *   - 2500ms after the synthetic
+ *   - synthetic kind is "click" (real click steps) or "type" (the
+ *     focusing click that precedes typing)
+ *
+ * Without this, the spare DOM click leaks into events.json, gets
+ * mis-attached to the next click step's metadata, and produces a
+ * second zoom envelope.
  *
  * Exported for unit testing.
  */
@@ -450,7 +457,8 @@ export function dropDuplicateDomClicks(events: RecordedEvent[]): void {
   const toDrop = new Set<number>();
   for (let i = 0; i < events.length; i++) {
     const a = events[i];
-    if (!a || a.kind !== "click" || !a.synthetic) continue;
+    if (!a || !a.synthetic) continue;
+    if (a.kind !== "click" && a.kind !== "type") continue;
     for (let j = i + 1; j < events.length; j++) {
       const b = events[j];
       if (!b || b.kind !== "click") continue;
@@ -605,6 +613,11 @@ async function executeStep(
         const center = await resolveCenter(step.selector);
         if (center) {
           await page.mouse.move(center.x, center.y, { steps: 18 });
+          // Emit a single TYPE event for this step. dropDuplicateDomClicks
+          // (post-pass) will remove the DOM click that fires when we call
+          // page.mouse.click below — the dedupe matches DOM clicks against
+          // synthetic TYPE events too, since the focusing click and the
+          // type are part of the same logical step.
           emitInteraction("type", center.x, center.y);
           await safeWait(150);
           await page.mouse.click(center.x, center.y);

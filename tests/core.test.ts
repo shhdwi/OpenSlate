@@ -36,13 +36,22 @@ describe("polish profile schema", () => {
     ).toThrow(/timing_and_spacing/);
   });
 
-  it("rejects zoom.max_peak > 1.6 (principle 8 restraint)", () => {
+  it("rejects zoom.max_peak > 2.0 (principle 8 restraint)", () => {
+    expect(() =>
+      parsePolishProfile({
+        ...DEFAULT_POLISH_PROFILE,
+        zoom: { ...DEFAULT_POLISH_PROFILE.zoom, max_peak: 2.5 },
+      }),
+    ).toThrow(/restraint/);
+  });
+
+  it("accepts zoom.max_peak up to 2.0 (Steel.dev-style punchy demos)", () => {
     expect(() =>
       parsePolishProfile({
         ...DEFAULT_POLISH_PROFILE,
         zoom: { ...DEFAULT_POLISH_PROFILE.zoom, max_peak: 2.0 },
       }),
-    ).toThrow(/restraint/);
+    ).not.toThrow();
   });
 
   it("rejects no_simultaneous_polish_gestures = false", () => {
@@ -363,6 +372,40 @@ describe("edit-plan: action-type keyframes + connected-pan", () => {
     const margin = 1 / (2 * peak.zoom);
     expect(peak.focal_x).toBeGreaterThanOrEqual(margin - 0.0001);
     expect(peak.focal_y).toBeGreaterThanOrEqual(margin - 0.0001);
+  });
+
+  it("connected-pan collapses far-apart-in-time envelopes if focals are close in space", () => {
+    // Two clicks with a LARGE time gap (so connected_gap_ms doesn't apply)
+    // but focals nearly identical — should still pan, not zoom-out + in.
+    // Common case: tabbing across adjacent form fields.
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 2000, x: 800, y: 400, step_index: 0 },
+      { kind: "click", t_ms: 8000, x: 820, y: 400, step_index: 1 }, // ~20px right
+    ];
+    const segs = computeSegments(events, 15000, profile);
+    const kfRaw = computeKeyframes(events, segs, profile, viewport);
+    const kfPan = applyConnectedPan(kfRaw, profile);
+    // Spatial trigger fires (focal distance ~20/1280 ~0.016 << 0.35).
+    expect(kfPan.length).toBeLessThan(kfRaw.length);
+  });
+
+  it("connected-pan does NOT collapse when focals are far AND time gap large", () => {
+    // Disable the time trigger by setting connected_gap_ms to 0. Then
+    // verify the spatial trigger correctly REJECTS far-apart focals.
+    const farProfile = {
+      ...profile,
+      zoom: { ...profile.zoom, connected_gap_ms: 0 },
+    };
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 2000, x: 100, y: 100, step_index: 0 },
+      { kind: "click", t_ms: 12000, x: 1100, y: 700, step_index: 1 },
+    ];
+    const segs = computeSegments(events, 18000, farProfile);
+    const kfRaw = computeKeyframes(events, segs, farProfile, viewport);
+    const kfPan = applyConnectedPan(kfRaw, farProfile);
+    // Focals after clamp are (0.333, 0.333) and (0.667, 0.667), distance
+    // ~0.47 > default focal_dist_max 0.35 → no collapse.
+    expect(kfPan.length).toBe(kfRaw.length);
   });
 
   it("connected-pan collapses adjacent zoom envelopes within connected_gap_ms", () => {

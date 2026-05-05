@@ -122,11 +122,27 @@ export interface ZoomProfile {
   /** principle: exaggeration restraint — suppress double-zooms on rapid actions */
   skip_if_within_ms: number;
   /**
-   * Connected-pan: when two zoom-ins are within this gap (source time),
-   * collapse the out + in into a single sustained zoom that pans focal A → B.
-   * Recordly's CHAINED_GAP_MS pattern, preserved.
+   * Connected-pan TIME trigger: when two zoom-ins are within this gap
+   * (source time), collapse the out + in into a single sustained zoom
+   * that pans focal A → B. Recordly's CHAINED_GAP_MS pattern, preserved.
    */
   connected_gap_ms: number;
+  /**
+   * Connected-pan SPATIAL trigger: when the focal distance between two
+   * consecutive peaks is below this (viewport-normalized, 0..√2),
+   * collapse the dip and pan instead — regardless of time gap.
+   *
+   * The defining problem this prevents: form-internal flows (typing a
+   * destination, then clicking an autocomplete option below it; tabbing
+   * across a row of date fields) zooming in, out, in, out for every
+   * adjacent action. Once the camera is zoomed and the next target is
+   * already visible, panning reads infinitely better than thrashing.
+   *
+   * Default 0.35 (~one third of the viewport diagonal). Below that,
+   * adjacent actions visually share the same scene and panning is
+   * the natural read; above that, the camera should fully reset.
+   */
+  connected_focal_dist_max: number;
 }
 
 // ─── Playback (segments + speed) ─────────────────────────────────────────────

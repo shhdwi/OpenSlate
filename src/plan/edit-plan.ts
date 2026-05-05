@@ -292,11 +292,23 @@ export function computeKeyframes(
 }
 
 /**
- * Connected-pan post-pass: when two consecutive zoom envelopes (peak_out
- * dropping to 1.0 then peak_in going back up) are within
- * `connected_gap_ms` on the OUTPUT timeline, replace the dip with a
- * sustained zoom that pans focal_a → focal_b. This is openSlate's
- * Recordly-pattern smoothness preserved against the new keyframe model.
+ * Connected-pan post-pass: collapses the "zoom-out then zoom-back-in"
+ * dip between two consecutive zoom envelopes into a sustained zoom that
+ * pans focal_a → focal_b.
+ *
+ * Two independent triggers (either suffices):
+ *
+ *   (a) TIME-CLOSE: post_a → pre_b gap on the OUTPUT timeline is below
+ *       `connected_gap_ms`. Original Recordly-pattern check — meaningful
+ *       when actions are visually back-to-back.
+ *
+ *   (b) SPACE-CLOSE: focal distance between the two peaks (in viewport-
+ *       normalized units, 0..√2) is below `connected_focal_dist_max`.
+ *       This is the rule that matters for form-internal flows: typing
+ *       in a destination field then clicking an autocomplete option
+ *       below it, or moving across a row of date fields. Without this,
+ *       every adjacent action causes a visually annoying zoom-out +
+ *       zoom-in even when the second focal is just inches away.
  *
  * Exported for unit testing.
  */
@@ -305,14 +317,14 @@ export function applyConnectedPan(
   profile: PolishProfile,
 ): CameraKeyframe[] {
   const gap = profile.zoom.connected_gap_ms / profile.playback.rate;
+  const focalDistMax = profile.zoom.connected_focal_dist_max;
   const out: CameraKeyframe[] = [];
   let i = 0;
   while (i < keyframes.length) {
     const k = keyframes[i]!;
     out.push(k);
     // Look ahead for: this is peak_out (zoom>1, next is post zoom=1, then
-    // pre zoom=1, then peak_in zoom>1). If the post→pre gap is within `gap`
-    // and the two zooms are equal, drop the post + pre and insert a hold.
+    // pre zoom=1, then peak_in zoom>1).
     const nA = keyframes[i + 1]; // post (zoom=1)
     const nB = keyframes[i + 2]; // pre  (zoom=1)
     const nC = keyframes[i + 3]; // peak_in
@@ -324,21 +336,28 @@ export function applyConnectedPan(
       nA.zoom === 1.0 &&
       nB.zoom === 1.0 &&
       nC.zoom > 1.0 &&
-      Math.abs(k.zoom - nC.zoom) < 0.001 &&
-      nB.out_t_ms - nA.out_t_ms <= gap
+      Math.abs(k.zoom - nC.zoom) < 0.001
     ) {
-      // Replace nA + nB with a single PAN keyframe at nA's time, holding
-      // peak zoom; we'll also overwrite k.ease for nC to be a "pan" ease.
-      out.push({
-        out_t_ms: nA.out_t_ms,
-        zoom: k.zoom,
-        focal_x: k.focal_x,
-        focal_y: k.focal_y,
-        ease: "linear",
-      });
-      // Skip the dropped pair; nC stays in the iteration.
-      i += 3;
-      continue;
+      const timeClose = nB.out_t_ms - nA.out_t_ms <= gap;
+      const focalDist = Math.hypot(
+        nC.focal_x - k.focal_x,
+        nC.focal_y - k.focal_y,
+      );
+      const spaceClose = focalDist <= focalDistMax;
+      if (timeClose || spaceClose) {
+        // Replace nA + nB with a single PAN keyframe at nA's time, holding
+        // peak zoom across the bridge. nC stays as the next peak — its
+        // ease drives the camera's pan curve from k's focal to nC's.
+        out.push({
+          out_t_ms: nA.out_t_ms,
+          zoom: k.zoom,
+          focal_x: k.focal_x,
+          focal_y: k.focal_y,
+          ease: "linear",
+        });
+        i += 3;
+        continue;
+      }
     }
     i++;
   }

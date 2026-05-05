@@ -39,6 +39,13 @@ export async function initProject(rootDir: string = process.cwd()): Promise<Init
     result.config_path = existing;
   }
 
+  // 1b. Ensure package.json has "type": "module" — polish.config.ts uses
+  // ESM `import` syntax. Without "type": "module" Node treats .ts files
+  // as CJS by default, and dynamic-importing the config silently fails;
+  // the recorder then runs against DEFAULT_POLISH_PROFILE (with the user's
+  // settings ignored). Update or create package.json so the config loads.
+  await ensurePackageJsonIsEsm(rootDir);
+
   // 2. Register with MCP-compatible clients
   for (const client of [registerClaudeCode, registerCursor, registerCodex]) {
     try {
@@ -53,6 +60,37 @@ export async function initProject(rootDir: string = process.cwd()): Promise<Init
   result.gitignore_updated = await updateGitignore(rootDir);
 
   return result;
+}
+
+/**
+ * Ensures the project's package.json has `"type": "module"`. Idempotent.
+ * Creates a minimal package.json if none exists. Leaves anything already
+ * set to "module" alone. Coerces "commonjs" → "module" with a warning so
+ * the user knows.
+ */
+async function ensurePackageJsonIsEsm(rootDir: string): Promise<void> {
+  const pkgPath = path.join(rootDir, "package.json");
+  let pkg: Record<string, unknown> = {};
+  let existed = false;
+  try {
+    pkg = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+    existed = true;
+  } catch {
+    // create minimal
+    pkg = { name: path.basename(rootDir), version: "0.0.0", private: true };
+  }
+  const currentType = pkg.type;
+  if (currentType === "module") return;
+  if (currentType === "commonjs") {
+    console.warn(
+      `[openslate] package.json had "type": "commonjs"; switching to "module" so polish.config.ts can load via ESM.`,
+    );
+  }
+  pkg.type = "module";
+  await fs.writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf8");
+  if (!existed) {
+    console.log(`[openslate] created minimal package.json at ${pkgPath}`);
+  }
 }
 
 async function registerClaudeCode(_rootDir: string): Promise<string | null> {

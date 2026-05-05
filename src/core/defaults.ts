@@ -111,10 +111,17 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     cursor_recover_ms: 250, // principle 7
     max_peak: 1.6, // principle 8 restraint cap (planner clamps to this)
     skip_if_within_ms: 800, // restraint: suppress double-zooms
-    // Connected-pan: when two zooms are within this gap (source-time),
-    // collapse the dip-out + dip-in into a sustained zoom that pans.
-    // Recordly's CHAINED_GAP_MS pattern, preserved.
+    // Connected-pan TIME trigger: collapses dip-out + dip-in when adjacent
+    // zoom envelopes are within this gap. Recordly's CHAINED_GAP_MS pattern.
     connected_gap_ms: 1350,
+    // Connected-pan SPATIAL trigger: collapses the dip when the next peak's
+    // focal is within this normalized distance (0..√2) of the current peak.
+    // 0.35 ≈ one-third of the viewport diagonal — empirically the boundary
+    // where an adjacent action still feels "in the same scene" so a pan
+    // reads better than a zoom-out + zoom-in. Form-internal flows (typing
+    // a destination, then clicking an autocomplete option just below;
+    // tabbing across date fields) all fall well under this threshold.
+    connected_focal_dist_max: 0.35,
   },
 
   // Playback (segments + speed). Default rate=1.0 preserves realtime;

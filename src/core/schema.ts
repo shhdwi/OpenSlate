@@ -94,16 +94,20 @@ const zoomSchema = z.object({
   }),
   pan_to_target: z.boolean(),
   cursor_recover_ms: z.number().min(0).max(1000),
+  // principle 8 (exaggeration restraint): hard cap. 1.6 reads "polished
+  // demo"; 2.0 reads "punchy product story" (Steel.dev's pattern). Above
+  // 2.0 reads cartoony — agents should not exceed.
   max_peak: z
     .number()
     .min(1)
     .max(2.5)
-    .refine((v) => v <= 1.6, {
+    .refine((v) => v <= 2.0, {
       message:
-        "principle 8 (exaggeration restraint): max_peak must be ≤ 1.6 in v1; higher reads cartoony",
+        "principle 8 (exaggeration restraint): max_peak must be ≤ 2.0 in v1; higher reads cartoony",
     }),
   skip_if_within_ms: z.number().min(0).max(3000),
   connected_gap_ms: z.number().min(0).max(5000),
+  connected_focal_dist_max: z.number().min(0).max(1.5).default(0.35),
 });
 
 const playbackSchema = z.object({
