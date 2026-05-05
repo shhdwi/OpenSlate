@@ -350,7 +350,7 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
 
   for (const [stepIndex, step] of opts.plan.steps.entries()) {
     await snapshotFrame(); // capture pre-step state
-    await executeStep(page, step, stepIndex, events, tNow);
+    await executeStep(page, step, stepIndex, events, cursorSamples, tNow);
   }
   await snapshotFrame(); // capture final state after last step
 
@@ -504,6 +504,7 @@ async function executeStep(
   step: PlanStep,
   stepIndex: number,
   events: RecordedEvent[],
+  cursorSamples: CursorSample[],
   tNow: () => number,
 ): Promise<void> {
   const safeWait = (ms: number) => page.waitForTimeout(Math.max(0, ms));
@@ -636,6 +637,21 @@ async function executeStep(
           await page.keyboard.press("Delete").catch(() => {});
         }
         await page.keyboard.type(step.value ?? "", { delay: 30 });
+        // After typing, the last sampled cursor kind is whatever was at
+        // the input field (typically "text" / I-beam). Without any
+        // mousemove, the rendered cursor stays as an I-beam frozen on
+        // the field — looks like the cursor never registered the user's
+        // hand-off from typing back to "ready to click". Push a synthetic
+        // cursor sample at the same coords with kind="arrow" so the
+        // renderer hard-swaps the sprite away from the I-beam.
+        if (center) {
+          cursorSamples.push({
+            t_ms: tNow(),
+            x: center.x,
+            y: center.y,
+            kind: "arrow",
+          });
+        }
       }
       await safeWait(
         Math.max(0, step.expected_duration_ms - (step.value ?? "").length * 30 - 550),
