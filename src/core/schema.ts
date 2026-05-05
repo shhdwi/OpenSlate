@@ -238,12 +238,14 @@ const flourishesSchema = z.object({
       dim_opacity: z.number().min(0).max(1),
       corner_radius_px: z.number().min(0).max(48),
       lift_outline: z.boolean(),
+      lift_scale: z.number().min(1.0).max(2.5).default(1.15),
     })
     .default({
       style: "spotlight",
       dim_opacity: 0.45,
       corner_radius_px: 12,
       lift_outline: true,
+      lift_scale: 1.15,
     }),
 });
 

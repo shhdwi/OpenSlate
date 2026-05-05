@@ -363,6 +363,16 @@ export interface FlourishHighlightTreatment {
   corner_radius_px: number;
   /** Spotlight: render the subtle 1px ring + drop shadow. */
   lift_outline: boolean;
+  /**
+   * Spotlight: scale factor applied to the highlighted region only —
+   * NOT a camera zoom. The bbox content renders at this scale, lifted
+   * forward from the page; surrounding content stays at base scale,
+   * dimmed underneath. Combined with the drop shadow, reads as "this
+   * card popped out of the page toward the viewer."
+   *
+   * Default 1.15. Set to 1.0 to disable the lift effect (dim-only).
+   */
+  lift_scale: number;
 }
 
 export interface FlourishesProfile {

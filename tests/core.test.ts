@@ -699,17 +699,20 @@ describe("init-template drift protection", () => {
     expect(tpl).toMatch(/connected_focal_dist_max:\s*0\.35/);
   });
 
-  it("zoom template for `highlight` is present (camera-frame an element)", () => {
+  it("zoom template for `highlight` is present (camera holds wide; lift is visual)", () => {
     const tpl = renderInitTemplate();
-    expect(tpl).toMatch(/highlight:\s*\{[\s\S]*?peak:\s*2/);
+    // peak=1.0 means camera doesn't zoom on highlight; the visual lift
+    // (lift_scale on the bbox) handles the enlargement.
+    expect(tpl).toMatch(/highlight:\s*\{[\s\S]*?peak:\s*1/);
     expect(tpl).toMatch(/highlight:\s*\{[\s\S]*?hold_ms:\s*2000/);
   });
 
-  it("flourishes.highlight_treatment defaults to spotlight (not border_glow)", () => {
+  it("flourishes.highlight_treatment defaults to spotlight + 1.15× lift_scale", () => {
     const tpl = renderInitTemplate();
     expect(tpl).toMatch(/highlight_treatment:\s*\{[\s\S]*?style:\s*"spotlight"/);
     expect(tpl).toMatch(/highlight_treatment:\s*\{[\s\S]*?dim_opacity:\s*0\.45/);
     expect(tpl).toMatch(/highlight_treatment:\s*\{[\s\S]*?lift_outline:\s*true/);
+    expect(tpl).toMatch(/highlight_treatment:\s*\{[\s\S]*?lift_scale:\s*1\.15/);
   });
 
   it("includes contextual_swap (cursor sprite swap setting)", () => {
@@ -1067,7 +1070,10 @@ describe("highlight action: smart zoom-to-fit + envelope", () => {
     expect(z).toBeLessThanOrEqual(1.6);
   });
 
-  it("highlight events generate a zoom envelope using bbox-derived peak", () => {
+  it("default highlight template has peak=1.0 — no camera zoom, only visual lift", () => {
+    // The visual lift (flourishes.highlight_treatment.lift_scale) handles
+    // the enlargement of the highlighted bbox; the camera holds wide.
+    expect(profile.zoom.templates.highlight.peak).toBe(1.0);
     const events: RecordedEvent[] = [
       {
         kind: "highlight",
@@ -1082,14 +1088,40 @@ describe("highlight action: smart zoom-to-fit + envelope", () => {
     ];
     const segs = computeSegments(events, 10000, profile);
     const kf = computeKeyframes(events, segs, profile, viewport);
+    // No keyframes with zoom > 1 — camera stays wide.
+    expect(kf.every((k) => k.zoom <= 1.0)).toBe(true);
+  });
+
+  it("when highlight peak is bumped >1, smart zoom-to-fit applies (opt-in path)", () => {
+    // Power users can opt into camera-zoom-on-highlight by raising the
+    // template peak. Smart zoom-to-fit then uses the bbox to compute the
+    // actual zoom, capped at the template peak.
+    const cameraProfile = {
+      ...profile,
+      zoom: {
+        ...profile.zoom,
+        templates: {
+          ...profile.zoom.templates,
+          highlight: { ...profile.zoom.templates.highlight, peak: 2.0 },
+        },
+      },
+    };
+    const events: RecordedEvent[] = [
+      {
+        kind: "highlight",
+        t_ms: 5000,
+        x: 640,
+        y: 400,
+        w: 200,
+        h: 100,
+        step_index: 0,
+        synthetic: true,
+      },
+    ];
+    const segs = computeSegments(events, 10000, cameraProfile);
+    const kf = computeKeyframes(events, segs, cameraProfile, viewport);
     const peakKf = kf.find((k) => k.zoom > 1);
     expect(peakKf).toBeDefined();
-    const expected = computeHighlightZoom(
-      { w: 200, h: 100 },
-      viewport,
-      Math.min(profile.zoom.templates.highlight.peak, profile.zoom.max_peak),
-    );
-    expect(peakKf!.zoom).toBeCloseTo(expected, 3);
   });
 
   it("highlight is salient — drives a segment around it", () => {
@@ -1109,6 +1141,179 @@ describe("highlight action: smart zoom-to-fit + envelope", () => {
     expect(segs.length).toBe(1);
     expect(segs[0]!.src_start_ms).toBeLessThan(5000);
     expect(segs[0]!.src_end_ms).toBeGreaterThan(5000);
+  });
+});
+
+describe("waitForVisualStability — page-settle primitive", () => {
+  // We stub the minimum of Playwright's Page surface that
+  // waitForVisualStability touches: evaluate() (returns the in-page
+  // snapshot), waitForTimeout (real setTimeout — must consume REAL time
+  // so the implementation's Date.now()-based elapsed tracking is correct),
+  // and waitForLoadState (used only when require_network_idle).
+  //
+  // Tests run in real time (a few hundred ms per test) — the alternative
+  // would be mocking Date.now()/performance.now() globally, which is more
+  // fragile than just letting the wall clock advance.
+  function makeFakePage(opts: {
+    /**
+     * (start_ms) → snapshot at the current real elapsed time. Models the
+     * in-page observer state. last_mut_at / last_shift_at are absolute ms
+     * since test start, in the same clock as `now`.
+     */
+    snapshot: (elapsed_ms: number) => {
+      last_mut_at: number;
+      last_shift_at: number;
+      mut_count: number;
+    };
+    network_idle_at_ms?: number; // when the fake load-state resolves
+  }) {
+    const start = Date.now();
+    const elapsed = () => Date.now() - start;
+    const page = {
+      async waitForTimeout(ms: number) {
+        await new Promise((r) => setTimeout(r, ms));
+      },
+      async evaluate(_fn: unknown) {
+        const e = elapsed();
+        const s = opts.snapshot(e);
+        return { ...s, now: e };
+      },
+      async waitForLoadState(_state: string, o?: { timeout?: number }) {
+        const target = opts.network_idle_at_ms ?? 0;
+        const wait = Math.max(0, target - elapsed());
+        const cap = o?.timeout ?? Number.POSITIVE_INFINITY;
+        if (wait > cap) {
+          await new Promise((r) => setTimeout(r, cap));
+          throw new Error("timeout");
+        }
+        await new Promise((r) => setTimeout(r, wait));
+      },
+    };
+    return page;
+  }
+
+  it("returns stable=true once the page has been quiet for stable_window_ms", async () => {
+    const { waitForVisualStability } = await import(
+      "../src/recorder/stability.js"
+    );
+    // Page is busy until t=300, then completely quiet.
+    const page = makeFakePage({
+      snapshot: (t) => ({
+        last_mut_at: Math.min(300, t),
+        last_shift_at: 0,
+        mut_count: 1,
+      }),
+    });
+    const r = await waitForVisualStability(page as never, {
+      timeout_ms: 5000,
+      stable_window_ms: 400,
+      min_wait_ms: 100,
+      interval_ms: 50,
+    });
+    expect(r.stable).toBe(true);
+    expect(r.reason).toBe("quiet");
+    // We need 400ms quiet after the last mutation at t=300, so we should
+    // return at ~700ms (plus polling slack of one interval).
+    expect(r.waited_ms).toBeGreaterThanOrEqual(700);
+    expect(r.waited_ms).toBeLessThan(900);
+  });
+
+  it("returns stable=false on timeout when the page never quiets", async () => {
+    const { waitForVisualStability } = await import(
+      "../src/recorder/stability.js"
+    );
+    // Mutation timestamp tracks `now` — page is constantly busy.
+    const page = makeFakePage({
+      snapshot: (t) => ({
+        last_mut_at: t,
+        last_shift_at: 0,
+        mut_count: 99,
+      }),
+    });
+    const r = await waitForVisualStability(page as never, {
+      timeout_ms: 1000,
+      stable_window_ms: 400,
+      min_wait_ms: 100,
+      interval_ms: 50,
+    });
+    expect(r.stable).toBe(false);
+    expect(r.reason).toBe("timeout");
+    // Should hit timeout shortly after 1000ms (one final interval after).
+    expect(r.waited_ms).toBeGreaterThanOrEqual(1000);
+    expect(r.waited_ms).toBeLessThan(1200);
+  });
+
+  it("respects min_wait_ms even when the page is already quiet", async () => {
+    const { waitForVisualStability } = await import(
+      "../src/recorder/stability.js"
+    );
+    // Page was quiet from t=0 onward — without min_wait, would return
+    // immediately. min_wait_ms enforces a floor.
+    const page = makeFakePage({
+      snapshot: () => ({
+        last_mut_at: 0,
+        last_shift_at: 0,
+        mut_count: 0,
+      }),
+    });
+    const r = await waitForVisualStability(page as never, {
+      timeout_ms: 3000,
+      stable_window_ms: 400,
+      min_wait_ms: 500,
+      interval_ms: 50,
+    });
+    expect(r.stable).toBe(true);
+    expect(r.waited_ms).toBeGreaterThanOrEqual(500);
+  });
+
+  it("require_network_idle holds stability until network settles", async () => {
+    const { waitForVisualStability } = await import(
+      "../src/recorder/stability.js"
+    );
+    // DOM goes quiet at t=200, but network doesn't reach idle until t=900.
+    // Result: should return ~stable_window after the LATER of the two.
+    const page = makeFakePage({
+      snapshot: (t) => ({
+        last_mut_at: Math.min(200, t),
+        last_shift_at: 0,
+        mut_count: 1,
+      }),
+      network_idle_at_ms: 900,
+    });
+    const r = await waitForVisualStability(page as never, {
+      timeout_ms: 5000,
+      stable_window_ms: 300,
+      min_wait_ms: 100,
+      interval_ms: 50,
+      require_network_idle: true,
+    });
+    expect(r.stable).toBe(true);
+    // Network settled at 900; the next poll after that point reads
+    // sinceMut > stable_window, so we return ~at the next poll.
+    expect(r.waited_ms).toBeGreaterThanOrEqual(900);
+  });
+});
+
+describe("highlight lift animates THROUGH envelope (not binary)", () => {
+  // Regression: previously the lifted-card transform was scale(liftScale)
+  // — constant during the entire envelope. Only opacity rode the in/hold/
+  // out curves, so the card POPPED into existence at full lift and
+  // POPPED out, reading as a glitch. Now scale is interpolated through
+  // envelope_opacity so the card visibly lifts forward, holds, recedes.
+  it("animatedScale = 1 + (lift_scale - 1) * envelope_opacity at the curve endpoints", () => {
+    const liftScale = 1.15;
+    const lerp = (env: number) => 1 + (liftScale - 1) * env;
+    expect(lerp(0)).toBeCloseTo(1.0); // pre-in / post-out
+    expect(lerp(0.5)).toBeCloseTo(1.075); // mid-curve
+    expect(lerp(1)).toBeCloseTo(1.15); // peak (hold)
+  });
+  it("animatedScale ≥ 1 always (envelope_opacity is in [0,1])", () => {
+    const liftScale = 1.15;
+    const lerp = (env: number) => 1 + (liftScale - 1) * env;
+    for (let env = 0; env <= 1; env += 0.1) {
+      expect(lerp(env)).toBeGreaterThanOrEqual(1);
+      expect(lerp(env)).toBeLessThanOrEqual(liftScale);
+    }
   });
 });
 

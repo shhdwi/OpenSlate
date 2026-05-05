@@ -24,6 +24,7 @@ import type { CaptureProfile } from "../core/types.js";
 import type { DemoPlan, PlanStep } from "../plan/types.js";
 import { ensureDir, recordingDir, type ProjectPaths } from "../utils/paths.js";
 import type { CursorKind, CursorSample, RecordedEvent, RecordingManifest } from "./events.js";
+import { installStabilityObservers, waitForVisualStability } from "./stability.js";
 
 /**
  * Map a CSS `cursor` keyword to the sprite kind we ship. We collapse the
@@ -119,16 +120,19 @@ const CURSOR_THROTTLE_MS = 8;
  * but BEFORE the real `mouse.click()` fires, we emit a synthetic click
  * event and hold the page steady for this duration. The renderer's click
  * bounce + halo are anchored to the synthetic click's timestamp, so the
- * full animation plays out against frames captured on the SOURCE page.
+ * animation plays out against frames captured on the SOURCE page.
  *
- * Without this, navigation-triggering clicks unmount the source page
- * mid-animation: the halo fires on top of the destination page, looking
- * like a glitch. Calibrated to cover the longest tail of the click
- * animation: CLICK_FX_DELAY_MS (250) + click_bounce.duration_ms (260) +
- * click_highlight.duration_ms (700) ≈ 1200ms, plus a 100ms cushion so
- * the halo is fully faded out by the time nav starts.
+ * Calibrated to cover bounce (260ms) + halo (700ms) + small cushion. The
+ * previous value (1300ms) was an upper bound that included a budget for
+ * "the page is about to navigate, hold the source page until the halo is
+ * COMPLETELY transparent." That trailing budget showed up as visible
+ * click-lag on non-navigating clicks (cursor visibly clicks → page sits
+ * frozen → page finally responds). Now: hold long enough for the halo to
+ * be ≥90% faded (alpha < 0.1 — invisible to the eye even if the new page
+ * paints over the last frame); stability detection takes over after the
+ * real click and waits ONLY as long as the page actually needs.
  */
-const PRE_CLICK_DWELL_MS = 1300;
+const PRE_CLICK_DWELL_MS = 750;
 
 /**
  * Minimum settle time after a page navigates and reaches networkidle, before
@@ -151,6 +155,14 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     deviceScaleFactor: opts.capture.device_pixel_ratio,
   });
   const page: Page = await context.newPage();
+
+  // Inject DOM-mutation + layout-shift observers BEFORE any goto so the
+  // observers exist on every page (init scripts re-run on each navigation).
+  // waitForVisualStability() reads `window.__openslate_stability_snapshot()`
+  // and replaces hardcoded post-action waits with "wait until the page has
+  // visually settled." Falls back to its `timeout_ms` ceiling if the page
+  // never settles (e.g., always-running animations).
+  await installStabilityObservers(page);
 
   const events: RecordedEvent[] = [];
   const cursorSamples: CursorSample[] = [];
@@ -657,10 +669,19 @@ async function executeStep(
       const url = step.selector ?? "";
       result.status = "fired";
       await page.goto(url, { waitUntil: "networkidle", timeout: 15_000 }).catch(() => {});
-      // Mandatory post-load settle so demos always start on a fully-painted
-      // page, never mid-hero-animation.
-      await safeWait(POST_NAV_SETTLE_MS);
-      await safeWait(step.expected_duration_ms);
+      // Wait for the page to visually settle (no DOM mutations + no layout
+      // shifts for `stable_window_ms`). Replaces the previous hardcoded
+      // POST_NAV_SETTLE_MS (1500ms) which was wrong in both directions —
+      // hero fonts/animations on slow pages still resolved AFTER 1500ms,
+      // and fast pages sat on a frozen frame for 1500ms unnecessarily.
+      // Ceiling = POST_NAV_SETTLE_MS + step.expected_duration_ms so the
+      // worst-case wait matches the previous behavior.
+      await waitForVisualStability(page, {
+        timeout_ms: POST_NAV_SETTLE_MS + step.expected_duration_ms,
+        stable_window_ms: 500,
+        min_wait_ms: 400,
+        require_network_idle: true,
+      });
       break;
     }
     case "click": {
@@ -705,11 +726,24 @@ async function executeStep(
       }
       // The DOM "click" listener also fires for the real mouse.click above
       // and emits a duplicate (non-synthetic) click event. dropDuplicateDomClicks
-      // removes those. Remaining hold is the "post-action read" budget on
-      // the new page.
-      await safeWait(
-        Math.max(0, step.expected_duration_ms - 500 - PRE_CLICK_DWELL_MS - 50),
+      // removes those. After the real click, wait for the page to settle
+      // (dropdown opens, date picker collapses, route loads) — replaces the
+      // old fixed-budget safeWait. Ceiling = remaining expected_duration_ms
+      // budget so we never wait LONGER than the plan asked for, but we
+      // typically return MUCH earlier on quiet pages. min_wait covers the
+      // case where the click triggers nothing visible (browser hasn't
+      // painted yet, observer would otherwise read "stable" instantly).
+      const postClickBudget = Math.max(
+        0,
+        step.expected_duration_ms - 500 - PRE_CLICK_DWELL_MS - 50,
       );
+      if (postClickBudget > 0) {
+        await waitForVisualStability(page, {
+          timeout_ms: postClickBudget,
+          stable_window_ms: 350,
+          min_wait_ms: 200,
+        });
+      }
       break;
     }
     case "type": {
@@ -746,7 +780,16 @@ async function executeStep(
         } else {
           await page.click(step.selector).catch(() => {});
         }
-        await safeWait(400); // let popup/expanded UI settle
+        // Wait for the focusing click's UI response to settle (popup
+        // opens, autocomplete renders, native dropdown attaches) before
+        // we start typing. Replaces the previous hardcoded `safeWait(400)`
+        // — combobox-popup pages need closer to 600-800ms; simple <input>
+        // fields settle in <100ms. Stability detection adapts.
+        await waitForVisualStability(page, {
+          timeout_ms: 1500,
+          stable_window_ms: 250,
+          min_wait_ms: 150,
+        });
         // Clear the field's current content via select-all + delete (only
         // if there's existing content; setting empty value can rebuild
         // controlled inputs and lose focus).
@@ -774,9 +817,22 @@ async function executeStep(
           });
         }
       }
-      await safeWait(
-        Math.max(0, step.expected_duration_ms - (step.value ?? "").length * 30 - 550),
+      // After typing, wait for any post-type UI response to settle —
+      // autocomplete suggestions populating, validation messages, search
+      // results streaming in. Replaces the previous fixed-budget remainder
+      // calculation. Ceiling matches that calculation so the recording
+      // can never be longer than what the plan asked for.
+      const postTypeBudget = Math.max(
+        0,
+        step.expected_duration_ms - (step.value ?? "").length * 30 - 550,
       );
+      if (postTypeBudget > 0) {
+        await waitForVisualStability(page, {
+          timeout_ms: postTypeBudget,
+          stable_window_ms: 350,
+          min_wait_ms: 200,
+        });
+      }
       break;
     }
     case "scroll": {
@@ -877,12 +933,19 @@ async function executeStep(
       // (click uses 24, faster move).
       await page.mouse.move(cx, cy, { steps: 36 });
       // Step 4: IN-phase preroll. The camera's zoom-in animation runs
-      // from event_t - duration_in_ms to event_t. Wait that duration so
-      // the IN phase covers a stable source window. Hardcoded to match
-      // defaults.ts highlight template (700ms); pulling from profile
-      // would require threading it through RecordOptions.
-      const HIGHLIGHT_PREROLL_MS = 700;
-      await safeWait(HIGHLIGHT_PREROLL_MS);
+      // from event_t - duration_in_ms to event_t (default 700ms). Wait
+      // long enough that the IN phase covers a stable source window AND
+      // any in-flight async rendering on the rest of the page has
+      // settled. Stability detection picks the actual moment the page
+      // becomes quiet — typically much faster than the 700ms ceiling on
+      // simple pages, but also extends correctly on slow ones (search
+      // results that stream in over 1-2s after the bbox itself is stable).
+      const HIGHLIGHT_PREROLL_MAX_MS = 1500;
+      await waitForVisualStability(page, {
+        timeout_ms: HIGHLIGHT_PREROLL_MAX_MS,
+        stable_window_ms: 400,
+        min_wait_ms: 300,
+      });
       // Step 5: emit the event NOW (after preroll, after stability).
       events.push({
         kind: "highlight",

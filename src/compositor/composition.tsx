@@ -42,7 +42,10 @@ import { Frame } from "./frame.js";
 import { Stage } from "./stage.js";
 import { Flourishes } from "../flourishes/index.js";
 import { ClickHighlight } from "../flourishes/click-highlight.js";
-import { HighlightTreatment } from "../flourishes/highlight-treatment.js";
+import {
+  HighlightTreatment,
+  isHighlightActive,
+} from "../flourishes/highlight-treatment.js";
 
 export interface CompositionProps {
   manifest: RecordingManifest;
@@ -279,19 +282,24 @@ export const PolishComposition: React.FC<CompositionProps> = ({
                 display: "block",
               }}
             />
-            <Cursor
-              x={cur.x}
-              y={cur.y}
-              vx={cur.vx ?? 0}
-              vy={cur.vy ?? 0}
-              viewport_width={viewport_w}
-              viewport_height={viewport_h}
-              speed_px_per_s={cur.speed_px_per_s ?? 0}
-              events={visibleEvents}
-              t_ms={out_t_ms}
-              profile={profile.cursor}
-              kind={currentCursorKind}
-            />
+            {/* Hide the cursor during a highlight envelope — the
+                spotlight + lifted bbox is the protagonist of the shot;
+                the cursor would distract from it. */}
+            {!isHighlightActive(visibleEvents, out_t_ms, profile.zoom) && (
+              <Cursor
+                x={cur.x}
+                y={cur.y}
+                vx={cur.vx ?? 0}
+                vy={cur.vy ?? 0}
+                viewport_width={viewport_w}
+                viewport_height={viewport_h}
+                speed_px_per_s={cur.speed_px_per_s ?? 0}
+                events={visibleEvents}
+                t_ms={out_t_ms}
+                profile={profile.cursor}
+                kind={currentCursorKind}
+              />
+            )}
             <ClickHighlight
               config={profile.flourishes.click_highlight}
               ctx={{
@@ -315,6 +323,7 @@ export const PolishComposition: React.FC<CompositionProps> = ({
               zoom={profile.zoom}
               brand={profile.brand}
               config={profile.flourishes.highlight_treatment}
+              source_frame_url={sourceFrameUrl}
             />
           </Stage>
         </div>

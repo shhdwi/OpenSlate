@@ -4,31 +4,39 @@
  * the recording's coordinate space and stay locked to the highlighted
  * element even as the Stage scales / translates.
  *
- * Two presets selected via `profile.flourishes.highlight_treatment.style`:
+ * Spotlight model (the default):
  *
- *   "spotlight" (default)
- *      Dims everything OUTSIDE the bbox via the box-shadow trick:
- *      a div sized to the bbox with a huge `0 0 0 9999px` outer shadow
- *      fills the rest of the Stage with a dim layer; the bbox itself is
- *      the only undimmed region. Adds a subtle 1px ring + soft drop
- *      shadow on the bbox, reading as "this card lifted forward."
- *      Pairs naturally with the smart zoom-to-fit.
+ *    The highlighted region renders LIFTED FORWARD off the page —
+ *    it's not the camera that zooms; it's the bbox that scales. The
+ *    surrounding page is dimmed via the box-shadow trick. A second
+ *    copy of the source frame is clip-pathed to the bbox region and
+ *    transform-scaled `lift_scale` (default 1.15×) from the bbox
+ *    center, giving the illusion of a card popping toward the
+ *    viewer. Drop shadow underneath completes the depth cue.
  *
- *   "border_glow"
- *      Pulsing brand-accent border + outer/inner glow. More attention-
- *      grabbing, less cinematic. For tutorial/instructional flows.
+ *    This is fundamentally different from a camera zoom (which moves
+ *    the whole scene). Here only the bbox content is enlarged;
+ *    surrounding content stays at base scale + dimmed.
  *
- *   "off"
- *      No treatment.
+ * border_glow model:
+ *    Pulsing brand-accent border + outer glow around the bbox. No
+ *    lift; no dim. For tutorial / instructional flows.
  *
- * Timing: the treatment is visible during the highlight envelope —
- * fades in during `duration_in_ms`, holds at full during `hold_ms`,
- * fades out during `duration_out_ms`. Opacity matches the camera's
- * zoom envelope so the treatment doesn't pop in/out.
+ * off:
+ *    No treatment; camera move alone signals attention.
+ *
+ * Timing: visible during the highlight envelope (in + hold + out).
+ * Opacity follows the same ease curves as the camera's zoom envelope
+ * so the treatment doesn't pop in/out.
  */
 
 import React from "react";
-import type { BrandKit, FlourishHighlightTreatment, ZoomProfile } from "../core/types.js";
+import { Img } from "remotion";
+import type {
+  BrandKit,
+  FlourishHighlightTreatment,
+  ZoomProfile,
+} from "../core/types.js";
 import type { RecordedEvent } from "../recorder/events.js";
 import { applyEase } from "../utils/easings.js";
 
@@ -40,6 +48,12 @@ export interface HighlightTreatmentProps {
   zoom: ZoomProfile;
   brand: BrandKit;
   config: FlourishHighlightTreatment;
+  /**
+   * URL of the current source frame. Used by the spotlight style to
+   * render a clipped + scaled copy of the recording for the lift
+   * effect. Without this prop, spotlight degrades to dim-only.
+   */
+  source_frame_url: string;
 }
 
 interface ActiveHighlight {
@@ -81,9 +95,7 @@ function findActiveHighlight(
     const out_t = (dt - holdMs) / outMs;
     envelope_opacity = 1 - applyEase(tpl.ease_out, Math.min(1, out_t));
   }
-  // Subtle 1.5s sine-breath pulse during hold only. Dimmer treatments
-  // (spotlight) get a smaller-amplitude pulse since the scene is already
-  // visually static; the pulse mostly reads on the border_glow style.
+  // Subtle 1.5s sine-breath pulse during hold only.
   const PULSE_PERIOD_MS = 1500;
   const pulse =
     dt >= 0 && dt < holdMs
@@ -92,14 +104,24 @@ function findActiveHighlight(
   return { ev, envelope_opacity, pulse, in_hold_phase: dt >= 0 && dt < holdMs };
 }
 
+/**
+ * `isHighlightActive` — exported so the cursor can hide itself when a
+ * highlight is in flight. Avoids duplicating the envelope-window logic
+ * across components.
+ */
+export function isHighlightActive(
+  events: RecordedEvent[],
+  t_ms: number,
+  zoom: ZoomProfile,
+): boolean {
+  return findActiveHighlight(events, t_ms, zoom) !== null;
+}
+
 function bboxStyle(
   ev: RecordedEvent,
   viewport_width: number,
   viewport_height: number,
 ): React.CSSProperties {
-  // ev.x/y are the bbox CENTER in viewport pixels; ev.w/h are the bbox
-  // dimensions. Convert to the top-left + size for absolute positioning
-  // inside the Stage (which is in viewport-pct space).
   const left_pct = ((ev.x! - ev.w! / 2) / viewport_width) * 100;
   const top_pct = ((ev.y! - ev.h! / 2) / viewport_height) * 100;
   const w_pct = (ev.w! / viewport_width) * 100;
@@ -121,24 +143,62 @@ export const HighlightTreatment: React.FC<HighlightTreatmentProps> = ({
   zoom,
   brand,
   config,
+  source_frame_url,
 }) => {
   if (config.style === "off") return null;
   const active = findActiveHighlight(events, t_ms, zoom);
   if (!active) return null;
-  const opacity = active.envelope_opacity * active.pulse;
 
   if (config.style === "spotlight") {
-    // Spotlight: dim everything outside the bbox via the box-shadow
-    // trick. A second div on top of it adds the lift outline + drop
-    // shadow without being clipped by the dim layer's shadow coverage.
+    // Spotlight does NOT apply the sine pulse. The lift+dim+drop-shadow
+    // is already a strong attention cue; multiplying through the pulse
+    // (range 0.8–1.0) caused a visible 20% opacity dip mid-hold that
+    // read as a flicker. The envelope alone (in/hold/out) is enough.
+    // Border_glow keeps the pulse — there the pulse IS the attention
+    // mechanism, not redundant.
+    const opacity = active.envelope_opacity;
+    // Spotlight: dim outside + LIFT inside. The lift is a scaled copy
+    // of the source frame clipped to the bbox region. Layer order:
     //
-    // Why two divs (not one): box-shadow renders OUTSIDE the box, so a
-    // single div would have its lift outline inside the dim's shadow
-    // area and become invisible. Stacking lets the lift sit on top.
+    //   1. (parent) original source <Img> at base scale
+    //   2. dim layer — box-shadow trick fills everything outside bbox
+    //   3. lifted bbox copy — second <img>, clip-pathed to bbox region,
+    //      scale(lift_scale) from bbox center
+    //   4. lift outline + drop shadow on the bbox at the lifted scale
+    //
+    // The lifted copy uses the SAME source_frame_url as layer 1 — it's
+    // just rendered again, clipped, and scaled. Browser caches the
+    // image so this is essentially free.
     const dimRgba = `rgba(0, 0, 0, ${config.dim_opacity * opacity})`;
     const outlineRgba = `rgba(255, 255, 255, ${0.35 * opacity})`;
-    const dropRgba = `rgba(0, 0, 0, ${0.5 * opacity})`;
+    const dropRgba = `rgba(0, 0, 0, ${0.55 * opacity})`;
+
+    const ev = active.ev;
+    const cx_pct = (ev.x! / viewport_width) * 100;
+    const cy_pct = (ev.y! / viewport_height) * 100;
+
+    // Clip-path inset values — the FOUR sides of the inset, each as a
+    // percentage of the element's box. Clip-path is computed BEFORE
+    // transform per CSS spec, so clipping happens in the element's
+    // pre-transform box (which is full Stage size), then the clipped
+    // region scales `lift_scale` from bbox center.
+    const top_inset = ((ev.y! - ev.h! / 2) / viewport_height) * 100;
+    const right_inset =
+      ((viewport_width - (ev.x! + ev.w! / 2)) / viewport_width) * 100;
+    const bottom_inset =
+      ((viewport_height - (ev.y! + ev.h! / 2)) / viewport_height) * 100;
+    const left_inset = ((ev.x! - ev.w! / 2) / viewport_width) * 100;
+
+    const liftScale = config.lift_scale;
+    // Animate scale THROUGH the envelope so the card lifts smoothly forward
+    // (1.0 → liftScale during in-phase, hold at liftScale, recede during
+    // out-phase). Without this the scale jumps to liftScale instantly while
+    // only opacity rides the envelope, which reads as a glitch rather than
+    // physical motion. envelope_opacity is already eased by ease_in /
+    // ease_out from the highlight zoom template.
+    const animatedScale = 1 + (liftScale - 1) * active.envelope_opacity;
     const bbox = bboxStyle(active.ev, viewport_width, viewport_height);
+
     return (
       <>
         {/* Dim layer — single huge box-shadow fills the rest of the Stage */}
@@ -152,16 +212,58 @@ export const HighlightTreatment: React.FC<HighlightTreatmentProps> = ({
             willChange: "opacity, box-shadow",
           }}
         />
-        {/* Lift: subtle ring + drop shadow. Z-stacks above the dim. */}
+        {/* Lifted copy: a second source-frame img clip-pathed to the
+            bbox + scaled `lift_scale` from bbox center. The visible
+            (clipped) bbox region grows 1.5× outward, lifted forward
+            off the page. */}
+        {liftScale > 1 && source_frame_url && (
+          <div
+            data-flourish="highlight-spotlight-lift-frame"
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              width: "100%",
+              height: "100%",
+              clipPath: `inset(${top_inset}% ${right_inset}% ${bottom_inset}% ${left_inset}% round ${config.corner_radius_px}px)`,
+              transform: `scale(${animatedScale})`,
+              transformOrigin: `${cx_pct}% ${cy_pct}%`,
+              pointerEvents: "none",
+              willChange: "transform, opacity",
+              opacity,
+            }}
+          >
+            {/* Remotion <Img> integrates with delayRender so the frame
+                doesn't compose until this second copy of the source frame
+                is loaded. Raw <img> was causing the lifted card to flicker
+                in/out for one frame at the start of the highlight envelope
+                because Remotion would render before the img loaded. */}
+            <Img
+              src={source_frame_url}
+              alt=""
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "fill",
+                display: "block",
+              }}
+            />
+          </div>
+        )}
+        {/* Lift: outline + drop shadow on the bbox at LIFTED scale.
+            Same scale + transform-origin as the frame copy so the
+            outline tracks the lifted region. */}
         {config.lift_outline && (
           <div
-            data-flourish="highlight-spotlight-lift"
+            data-flourish="highlight-spotlight-lift-outline"
             style={{
               ...bbox,
               borderRadius: config.corner_radius_px,
-              boxShadow: `0 0 0 1px ${outlineRgba}, 0 12px 36px ${dropRgba}`,
+              boxShadow: `0 0 0 1px ${outlineRgba}, 0 18px 48px ${dropRgba}`,
+              transform: `scale(${animatedScale})`,
+              transformOrigin: "center center",
               pointerEvents: "none",
-              willChange: "opacity, box-shadow",
+              willChange: "transform, opacity",
             }}
           />
         )}
@@ -170,7 +272,13 @@ export const HighlightTreatment: React.FC<HighlightTreatmentProps> = ({
   }
 
   if (config.style === "border_glow") {
-    // Original treatment: pulsing brand-accent border + outer glow.
+    // Border_glow KEEPS the sine pulse — a pulsing border is the
+    // attention mechanism for tutorial/instructional flows, and the
+    // 0.8–1.0 modulation reads as a deliberate "look at me" breath
+    // rather than a glitch (the border is the only visible element,
+    // so its opacity oscillation is intentional design, not a leak
+    // from another mechanism competing with it).
+    const opacity = active.envelope_opacity * active.pulse;
     const minDim = Math.min(viewport_width, viewport_height);
     const borderPx = Math.max(2, Math.round(minDim * 0.003));
     const color = brand.accent.startsWith("#") ? brand.accent : "#FFC857";

@@ -110,15 +110,18 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
         hold_ms: 0,
         duration_out_ms: 0,
       },
-      // Highlight: camera-frames a specific element without clicking it,
-      // for "look at this dashboard widget" / "the AI summary just appeared
-      // here" moments. Smart zoom-to-fit computes the actual peak per
-      // event from the element's bbox (`computeHighlightZoom` in
-      // edit-plan.ts). This `peak` is the CEILING — small elements don't
-      // zoom past it. Hold is longer than click because the WHOLE point
-      // is for the viewer to read the highlighted content.
+      // Highlight CAMERA template. peak: 1.0 by default — the highlight
+      // visual is a LIFT effect (`flourishes.highlight_treatment.lift_scale`,
+      // default 1.15×) applied to the bbox region itself, not a camera
+      // zoom of the whole scene. The camera holds wide while the
+      // highlighted card "pops forward" via the visual treatment.
+      //
+      // Bump peak above 1.0 if you want camera AND visual lift combined
+      // (rarely useful — usually too much). Smart zoom-to-fit
+      // (computeHighlightZoom) still computes a bbox-aware camera peak
+      // when peak > 1.0, capped at this value.
       highlight: {
-        peak: 2.0,
+        peak: 1.0,
         ease_in: "quart_out",
         ease_out: "cubic_in_out",
         duration_in_ms: 700,
@@ -272,6 +275,17 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
       dim_opacity: 0.45,
       corner_radius_px: 12,
       lift_outline: true,
+      // 1.15× lift on the highlighted region itself (NOT a camera zoom).
+      // The bbox content scales 1.15× from its center, lifting forward
+      // from the page; surrounding content stays at base scale, dimmed.
+      // Combined with the drop shadow this reads as a card popping
+      // out toward the viewer. The camera doesn't move (highlight
+      // template peak default is 1.0); the 1.15× is purely visual.
+      // 1.5× was tried first and read too aggressive — the seam between
+      // the lifted region and surrounding content drew attention away
+      // from the highlight itself. 1.15× is the calibrated minimum: a
+      // perceptible "lifting forward" cue without breaking the illusion.
+      lift_scale: 1.15,
     },
   },
 
