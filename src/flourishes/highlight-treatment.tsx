@@ -1,20 +1,34 @@
 /**
- * Visual treatment for `highlight` events. Draws a pulsing border + glow
- * around the highlighted bbox during the camera's hold phase, so the
- * region the camera is framing also reads visually as "this is what
- * we're showing you" — not just "the camera happens to be zoomed here."
+ * Visual treatment for `highlight` events. Lives INSIDE the Stage so
+ * it inherits the camera transform — bbox-positioned overlays track
+ * the recording's coordinate space and stay locked to the highlighted
+ * element even as the Stage scales / translates.
  *
- * Lives INSIDE the Stage so it inherits the camera transform — the
- * border tracks the recording-frame's coordinate space and stays
- * locked to the bbox even as the Stage scales/translates.
+ * Two presets selected via `profile.flourishes.highlight_treatment.style`:
  *
- * Timing: visible during the IN + HOLD + first half of OUT phases of
- * the highlight envelope. Fades out smoothly with the camera's zoom-
- * out so it doesn't pop.
+ *   "spotlight" (default)
+ *      Dims everything OUTSIDE the bbox via the box-shadow trick:
+ *      a div sized to the bbox with a huge `0 0 0 9999px` outer shadow
+ *      fills the rest of the Stage with a dim layer; the bbox itself is
+ *      the only undimmed region. Adds a subtle 1px ring + soft drop
+ *      shadow on the bbox, reading as "this card lifted forward."
+ *      Pairs naturally with the smart zoom-to-fit.
+ *
+ *   "border_glow"
+ *      Pulsing brand-accent border + outer/inner glow. More attention-
+ *      grabbing, less cinematic. For tutorial/instructional flows.
+ *
+ *   "off"
+ *      No treatment.
+ *
+ * Timing: the treatment is visible during the highlight envelope —
+ * fades in during `duration_in_ms`, holds at full during `hold_ms`,
+ * fades out during `duration_out_ms`. Opacity matches the camera's
+ * zoom envelope so the treatment doesn't pop in/out.
  */
 
 import React from "react";
-import type { BrandKit, ZoomProfile } from "../core/types.js";
+import type { BrandKit, FlourishHighlightTreatment, ZoomProfile } from "../core/types.js";
 import type { RecordedEvent } from "../recorder/events.js";
 import { applyEase } from "../utils/easings.js";
 
@@ -25,27 +39,26 @@ export interface HighlightTreatmentProps {
   viewport_height: number;
   zoom: ZoomProfile;
   brand: BrandKit;
+  config: FlourishHighlightTreatment;
 }
 
-const HIGHLIGHT_BORDER_PX_VIEWPORT_FRACTION = 0.003; // 0.3% of viewport min-dim
-const HIGHLIGHT_GLOW_PX = 24;
-const HIGHLIGHT_RADIUS_PX = 12;
+interface ActiveHighlight {
+  ev: RecordedEvent;
+  envelope_opacity: number;
+  pulse: number;
+  in_hold_phase: boolean;
+}
 
-export const HighlightTreatment: React.FC<HighlightTreatmentProps> = ({
-  events,
-  t_ms,
-  viewport_width,
-  viewport_height,
-  zoom,
-  brand,
-}) => {
-  // Find the active highlight: most-recent highlight event whose envelope
-  // (in + hold + out) covers the current t_ms. Highlight envelope is the
-  // template's full duration, anchored at the event's t_ms.
+function findActiveHighlight(
+  events: RecordedEvent[],
+  t_ms: number,
+  zoom: ZoomProfile,
+): ActiveHighlight | null {
   const tpl = zoom.templates.highlight;
-  const total_envelope_ms = tpl.duration_in_ms + tpl.hold_ms + tpl.duration_out_ms;
-
-  const active = [...events]
+  const inMs = tpl.duration_in_ms;
+  const holdMs = tpl.hold_ms;
+  const outMs = tpl.duration_out_ms;
+  const ev = [...events]
     .reverse()
     .find(
       (e) =>
@@ -54,82 +67,129 @@ export const HighlightTreatment: React.FC<HighlightTreatmentProps> = ({
         typeof e.y === "number" &&
         typeof e.w === "number" &&
         typeof e.h === "number" &&
-        t_ms >= e.t_ms - tpl.duration_in_ms &&
-        t_ms <= e.t_ms + tpl.hold_ms + tpl.duration_out_ms,
+        t_ms >= e.t_ms - inMs &&
+        t_ms <= e.t_ms + holdMs + outMs,
     );
-  if (
-    !active ||
-    active.x == null ||
-    active.y == null ||
-    active.w == null ||
-    active.h == null
-  ) {
-    return null;
-  }
-
-  // Compute the local-time progression so we can fade in/out with the
-  // camera's zoom envelope. Treatment opacity matches the camera's
-  // visibility: ramp up during in, hold at full during hold, fade out
-  // during out — same shape as the zoom envelope.
-  const dt = t_ms - active.t_ms;
-  const inMs = tpl.duration_in_ms;
-  const holdMs = tpl.hold_ms;
-  const outMs = tpl.duration_out_ms;
-  let envelopeOpacity: number;
+  if (!ev) return null;
+  const dt = t_ms - ev.t_ms;
+  let envelope_opacity: number;
   if (dt < 0) {
-    // pre-event (we matched on t_ms >= e.t_ms - duration_in_ms)
-    envelopeOpacity = applyEase(tpl.ease_in, 1 + dt / inMs);
+    envelope_opacity = applyEase(tpl.ease_in, 1 + dt / inMs);
   } else if (dt < holdMs) {
-    envelopeOpacity = 1;
+    envelope_opacity = 1;
   } else {
     const out_t = (dt - holdMs) / outMs;
-    envelopeOpacity = 1 - applyEase(tpl.ease_out, Math.min(1, out_t));
+    envelope_opacity = 1 - applyEase(tpl.ease_out, Math.min(1, out_t));
   }
-
-  // Pulse inside the hold phase: gentle 1.5s sine-ish breath so the
-  // border doesn't read static. Subtle — 0.7..1.0 amplitude.
+  // Subtle 1.5s sine-breath pulse during hold only. Dimmer treatments
+  // (spotlight) get a smaller-amplitude pulse since the scene is already
+  // visually static; the pulse mostly reads on the border_glow style.
   const PULSE_PERIOD_MS = 1500;
   const pulse =
     dt >= 0 && dt < holdMs
-      ? 0.85 + 0.15 * Math.sin((dt / PULSE_PERIOD_MS) * Math.PI * 2)
+      ? 0.9 + 0.1 * Math.sin((dt / PULSE_PERIOD_MS) * Math.PI * 2)
       : 1;
-  const opacity = envelopeOpacity * pulse;
+  return { ev, envelope_opacity, pulse, in_hold_phase: dt >= 0 && dt < holdMs };
+}
 
-  // Position via viewport-pct so it tracks the recording's coord space
-  // (Stage handles the camera transform; the treatment is a Stage child).
-  const left_pct = (active.x! - active.w! / 2) / viewport_width * 100;
-  const top_pct = (active.y! - active.h! / 2) / viewport_height * 100;
-  const w_pct = (active.w! / viewport_width) * 100;
-  const h_pct = (active.h! / viewport_height) * 100;
+function bboxStyle(
+  ev: RecordedEvent,
+  viewport_width: number,
+  viewport_height: number,
+): React.CSSProperties {
+  // ev.x/y are the bbox CENTER in viewport pixels; ev.w/h are the bbox
+  // dimensions. Convert to the top-left + size for absolute positioning
+  // inside the Stage (which is in viewport-pct space).
+  const left_pct = ((ev.x! - ev.w! / 2) / viewport_width) * 100;
+  const top_pct = ((ev.y! - ev.h! / 2) / viewport_height) * 100;
+  const w_pct = (ev.w! / viewport_width) * 100;
+  const h_pct = (ev.h! / viewport_height) * 100;
+  return {
+    position: "absolute",
+    left: `${left_pct}%`,
+    top: `${top_pct}%`,
+    width: `${w_pct}%`,
+    height: `${h_pct}%`,
+  };
+}
 
-  // Border thickness scales with the smaller viewport dimension so it
-  // reads consistently regardless of zoom level.
-  const minDim = Math.min(viewport_width, viewport_height);
-  const borderPx = Math.max(2, Math.round(minDim * HIGHLIGHT_BORDER_PX_VIEWPORT_FRACTION));
+export const HighlightTreatment: React.FC<HighlightTreatmentProps> = ({
+  events,
+  t_ms,
+  viewport_width,
+  viewport_height,
+  zoom,
+  brand,
+  config,
+}) => {
+  if (config.style === "off") return null;
+  const active = findActiveHighlight(events, t_ms, zoom);
+  if (!active) return null;
+  const opacity = active.envelope_opacity * active.pulse;
 
-  // Resolve color: brand.accent if specified as hex, else fallback.
-  const color = brand.accent.startsWith("#") ? brand.accent : "#FFC857";
+  if (config.style === "spotlight") {
+    // Spotlight: dim everything outside the bbox via the box-shadow
+    // trick. A second div on top of it adds the lift outline + drop
+    // shadow without being clipped by the dim layer's shadow coverage.
+    //
+    // Why two divs (not one): box-shadow renders OUTSIDE the box, so a
+    // single div would have its lift outline inside the dim's shadow
+    // area and become invisible. Stacking lets the lift sit on top.
+    const dimRgba = `rgba(0, 0, 0, ${config.dim_opacity * opacity})`;
+    const outlineRgba = `rgba(255, 255, 255, ${0.35 * opacity})`;
+    const dropRgba = `rgba(0, 0, 0, ${0.5 * opacity})`;
+    const bbox = bboxStyle(active.ev, viewport_width, viewport_height);
+    return (
+      <>
+        {/* Dim layer — single huge box-shadow fills the rest of the Stage */}
+        <div
+          data-flourish="highlight-spotlight-dim"
+          style={{
+            ...bbox,
+            borderRadius: config.corner_radius_px,
+            boxShadow: `0 0 0 9999px ${dimRgba}`,
+            pointerEvents: "none",
+            willChange: "opacity, box-shadow",
+          }}
+        />
+        {/* Lift: subtle ring + drop shadow. Z-stacks above the dim. */}
+        {config.lift_outline && (
+          <div
+            data-flourish="highlight-spotlight-lift"
+            style={{
+              ...bbox,
+              borderRadius: config.corner_radius_px,
+              boxShadow: `0 0 0 1px ${outlineRgba}, 0 12px 36px ${dropRgba}`,
+              pointerEvents: "none",
+              willChange: "opacity, box-shadow",
+            }}
+          />
+        )}
+      </>
+    );
+  }
 
-  return (
-    <div
-      data-flourish="highlight-treatment"
-      style={{
-        position: "absolute",
-        left: `${left_pct}%`,
-        top: `${top_pct}%`,
-        width: `${w_pct}%`,
-        height: `${h_pct}%`,
-        borderRadius: HIGHLIGHT_RADIUS_PX,
-        border: `${borderPx}px solid ${color}`,
-        boxShadow: `0 0 ${HIGHLIGHT_GLOW_PX}px ${color}, inset 0 0 ${HIGHLIGHT_GLOW_PX / 2}px ${color}40`,
-        opacity,
-        pointerEvents: "none",
-        // willChange so chromium doesn't redo the layer for every frame
-        willChange: "opacity",
-        // Slight outward inset so the border draws OVER the bbox edge
-        // (and a hair outside) rather than chopping into the content.
-        boxSizing: "border-box",
-      }}
-    />
-  );
+  if (config.style === "border_glow") {
+    // Original treatment: pulsing brand-accent border + outer glow.
+    const minDim = Math.min(viewport_width, viewport_height);
+    const borderPx = Math.max(2, Math.round(minDim * 0.003));
+    const color = brand.accent.startsWith("#") ? brand.accent : "#FFC857";
+    return (
+      <div
+        data-flourish="highlight-border-glow"
+        style={{
+          ...bboxStyle(active.ev, viewport_width, viewport_height),
+          borderRadius: config.corner_radius_px,
+          border: `${borderPx}px solid ${color}`,
+          boxShadow: `0 0 24px ${color}, inset 0 0 12px ${color}40`,
+          opacity,
+          pointerEvents: "none",
+          willChange: "opacity",
+          boxSizing: "border-box",
+        }}
+      />
+    );
+  }
+
+  return null;
 };

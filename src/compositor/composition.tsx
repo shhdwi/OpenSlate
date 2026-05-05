@@ -303,9 +303,10 @@ export const PolishComposition: React.FC<CompositionProps> = ({
               viewport_width={viewport_w}
               viewport_height={viewport_h}
             />
-            {/* Highlight treatment: pulsing border + glow around the
-                highlighted bbox during the hold. In-Stage so it tracks
-                the camera transform. */}
+            {/* Highlight treatment (spotlight by default): dims regions
+                outside the bbox + adds a subtle lift outline. Or pulsing
+                border (border_glow) if configured. In-Stage so it
+                tracks the camera transform. */}
             <HighlightTreatment
               events={visibleEvents}
               t_ms={out_t_ms}
@@ -313,6 +314,7 @@ export const PolishComposition: React.FC<CompositionProps> = ({
               viewport_height={viewport_h}
               zoom={profile.zoom}
               brand={profile.brand}
+              config={profile.flourishes.highlight_treatment}
             />
           </Stage>
         </div>

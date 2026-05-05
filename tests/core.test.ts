@@ -705,6 +705,13 @@ describe("init-template drift protection", () => {
     expect(tpl).toMatch(/highlight:\s*\{[\s\S]*?hold_ms:\s*2000/);
   });
 
+  it("flourishes.highlight_treatment defaults to spotlight (not border_glow)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/highlight_treatment:\s*\{[\s\S]*?style:\s*"spotlight"/);
+    expect(tpl).toMatch(/highlight_treatment:\s*\{[\s\S]*?dim_opacity:\s*0\.45/);
+    expect(tpl).toMatch(/highlight_treatment:\s*\{[\s\S]*?lift_outline:\s*true/);
+  });
+
   it("includes contextual_swap (cursor sprite swap setting)", () => {
     const tpl = renderInitTemplate();
     expect(tpl).toMatch(/contextual_swap:\s*true/);

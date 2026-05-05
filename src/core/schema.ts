@@ -232,6 +232,19 @@ const flourishesSchema = z.object({
     style: z.enum(["confetti_minimal", "checkmark_pop", "ring_pulse"]),
     color: z.string(),
   }),
+  highlight_treatment: z
+    .object({
+      style: z.enum(["spotlight", "border_glow", "off"]),
+      dim_opacity: z.number().min(0).max(1),
+      corner_radius_px: z.number().min(0).max(48),
+      lift_outline: z.boolean(),
+    })
+    .default({
+      style: "spotlight",
+      dim_opacity: 0.45,
+      corner_radius_px: 12,
+      lift_outline: true,
+    }),
 });
 
 const brandSchema = z.object({

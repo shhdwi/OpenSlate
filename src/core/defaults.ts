@@ -261,6 +261,18 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
       style: "confetti_minimal",
       color: "brand.accent",
     },
+    // Highlight treatment default: "spotlight" — dims non-highlighted
+    // regions while the camera holds on the bbox. The highlighted area
+    // gets a subtle 1px ring + drop shadow, reading as "this lifted
+    // forward toward the camera." Switch to "border_glow" for a more
+    // attention-grabbing pulsing outline (tutorial/instructional feel),
+    // or "off" if the camera move alone is enough.
+    highlight_treatment: {
+      style: "spotlight",
+      dim_opacity: 0.45,
+      corner_radius_px: 12,
+      lift_outline: true,
+    },
   },
 
   exports: {

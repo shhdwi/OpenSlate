@@ -583,6 +583,57 @@ async function executeStep(
     }
   }
 
+  /**
+   * Wait until the selector's bounding box has been stable across
+   * `requiredStable` consecutive 150ms checks. Returns the final stable
+   * box, or null if unstable / unresolvable within the timeout.
+   *
+   * Used by the `highlight` action so the camera's IN-phase animation
+   * fires onto a settled element (search results, dashboard widgets,
+   * AI-generated outputs that take 1-3s to fully render after the
+   * selector first matches). Default tolerance: 1px x/y drift.
+   */
+  async function waitForStableBbox(
+    page: Page,
+    selector: string,
+    requiredStable = 3,
+    pollIntervalMs = 150,
+    maxWaitMs = 5000,
+    drift_tol_px = 1,
+  ): Promise<{ x: number; y: number; width: number; height: number } | null> {
+    const start = Date.now();
+    let prev: { x: number; y: number; width: number; height: number } | null = null;
+    let stable = 0;
+    while (Date.now() - start < maxWaitMs) {
+      let box: { x: number; y: number; width: number; height: number } | null = null;
+      try {
+        const handle = await page.$(selector);
+        if (handle) box = await handle.boundingBox();
+      } catch {
+        box = null;
+      }
+      if (!box) {
+        // Element disappeared mid-poll — reset stability counter and retry.
+        prev = null;
+        stable = 0;
+      } else if (
+        prev &&
+        Math.abs(box.x - prev.x) <= drift_tol_px &&
+        Math.abs(box.y - prev.y) <= drift_tol_px &&
+        Math.abs(box.width - prev.width) <= drift_tol_px &&
+        Math.abs(box.height - prev.height) <= drift_tol_px
+      ) {
+        stable++;
+        if (stable >= requiredStable) return box;
+      } else {
+        stable = 1;
+      }
+      prev = box;
+      await page.waitForTimeout(pollIntervalMs);
+    }
+    return prev;
+  }
+
   /** Emit a synthetic interaction event so the auto-zoom resolver can pick it up. */
   function emitInteraction(
     kind: "click" | "type" | "scroll" | "hover",
@@ -766,43 +817,87 @@ async function executeStep(
       break;
     }
     case "highlight": {
-      // Camera-frames a region without clicking. Resolves the bbox,
-      // emits a `highlight` event with bbox dimensions (so the planner
-      // can compute smart zoom-to-fit), and slowly drifts the cursor
-      // to the bbox center as a "the demo is pointing at this" signal.
+      // Camera-frames a region without clicking. The hard part is
+      // TIMING: highlights typically target async-rendered content
+      // (search results, dashboard widgets, AI-generated outputs) that
+      // isn't immediately stable when the selector first matches.
+      //
+      // The recorder must give the camera's IN phase (the 700ms zoom-in
+      // animation that starts BEFORE the event timestamp) a stable
+      // source-time window — otherwise the camera zooms toward an
+      // element that's still rendering or shifting position.
+      //
+      // Sequence:
+      //   1. waitForSelector (state: visible) — element must exist
+      //   2. waitForStableBbox — bbox unchanged across 3×150ms = 450ms
+      //   3. cursor drift (slow, signals attention)
+      //   4. safeWait(HIGHLIGHT_PREROLL_MS) — gives the IN phase a fully
+      //      settled source-time window
+      //   5. emit `highlight` event (event_t = step end of preroll)
+      //   6. hold for expected_duration_ms
+      //
+      // The keyframe planner anchors the IN phase at event_t - duration_in_ms
+      // (= step 4's start). During the IN window the page is settled.
       if (!step.selector) {
         await safeWait(step.expected_duration_ms);
         break;
       }
-      const handle = await page.$(step.selector);
-      const box = handle ? await handle.boundingBox() : null;
-      if (!box) {
+      // Step 1: wait for selector to be visible.
+      let visible = false;
+      try {
+        await page.waitForSelector(step.selector, {
+          state: "visible",
+          timeout: 10_000,
+        });
+        visible = true;
+      } catch {
+        // selector never became visible — fail soft
+      }
+      if (!visible) {
         result.status = "selector_missed";
         result.resolved_at = null;
         await safeWait(step.expected_duration_ms);
         break;
       }
-      const cx = box.x + box.width / 2;
-      const cy = box.y + box.height / 2;
+      // Step 2: wait for bbox stability. Layout-shift detection — only
+      // proceed when the bbox has been unchanged for 3 consecutive
+      // 150ms checks (≈ 450ms of stable layout).
+      const stableBox = await waitForStableBbox(page, step.selector);
+      if (!stableBox) {
+        result.status = "selector_missed";
+        result.resolved_at = null;
+        await safeWait(step.expected_duration_ms);
+        break;
+      }
+      const cx = stableBox.x + stableBox.width / 2;
+      const cy = stableBox.y + stableBox.height / 2;
       result.status = "fired";
       result.resolved_at = { x: cx, y: cy };
-      // Slow drift (steps: 36) reads as deliberate attention vs the
-      // 18-24 step pace of click/type setup.
+      // Step 3: cursor drift — steps:36 reads as "deliberate attention"
+      // (click uses 24, faster move).
       await page.mouse.move(cx, cy, { steps: 36 });
+      // Step 4: IN-phase preroll. The camera's zoom-in animation runs
+      // from event_t - duration_in_ms to event_t. Wait that duration so
+      // the IN phase covers a stable source window. Hardcoded to match
+      // defaults.ts highlight template (700ms); pulling from profile
+      // would require threading it through RecordOptions.
+      const HIGHLIGHT_PREROLL_MS = 700;
+      await safeWait(HIGHLIGHT_PREROLL_MS);
+      // Step 5: emit the event NOW (after preroll, after stability).
       events.push({
         kind: "highlight",
         t_ms: tNow(),
         x: cx,
         y: cy,
-        w: box.width,
-        h: box.height,
+        w: stableBox.width,
+        h: stableBox.height,
         step_index: stepIndex,
         note: step.note,
         no_zoom: step.no_zoom,
         synthetic: true,
       });
-      // Hold the cursor + page state on the highlighted region for
-      // expected_duration_ms so the camera's hold has source frames.
+      // Step 6: hold for expected_duration_ms. The camera's hold phase
+      // gets a stable source window of the same duration.
       await safeWait(step.expected_duration_ms);
       break;
     }

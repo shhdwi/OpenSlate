@@ -335,6 +335,36 @@ export interface FlourishSuccessBurst {
   color: string;
 }
 
+/**
+ * Visual treatment applied to `highlight` action regions during the
+ * camera's hold phase. Two presets:
+ *
+ *   - `"spotlight"` (default): dims everything OUTSIDE the bbox so the
+ *     highlighted region is the only undimmed area. Adds a subtle
+ *     1-pixel ring and drop shadow on the bbox itself, reading as
+ *     "this card lifted forward toward the camera." Pairs with the
+ *     camera's smart zoom-to-fit. Use this for product reveals: AI-
+ *     generated outputs, dashboard widgets, search results.
+ *
+ *   - `"border_glow"`: pulsing brand-accent border + outer glow around
+ *     the bbox. More attention-grabbing, less cinematic. Use this for
+ *     tutorial / instructional flows where the user needs an explicit
+ *     "look here!" pointer beyond the camera move.
+ *
+ *   - `"off"`: no treatment. The camera move alone signals attention.
+ *     Useful for back-to-back highlights where treatment would feel
+ *     repetitive.
+ */
+export interface FlourishHighlightTreatment {
+  style: "spotlight" | "border_glow" | "off";
+  /** Spotlight: opacity of the dim layer over non-highlighted regions (0..1). */
+  dim_opacity: number;
+  /** Rounded-corner radius of the bbox cutout, in viewport-equivalent px. */
+  corner_radius_px: number;
+  /** Spotlight: render the subtle 1px ring + drop shadow. */
+  lift_outline: boolean;
+}
+
 export interface FlourishesProfile {
   enabled: boolean;
   outro_logo_reveal: FlourishOutroLogoReveal;
@@ -342,6 +372,7 @@ export interface FlourishesProfile {
   step_badges: FlourishStepBadges;
   scene_title_card: FlourishSceneTitleCard;
   success_burst: FlourishSuccessBurst;
+  highlight_treatment: FlourishHighlightTreatment;
 }
 
 // ─── Brand kit ───────────────────────────────────────────────────────────────
