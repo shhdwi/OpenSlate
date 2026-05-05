@@ -120,7 +120,36 @@ export function outputDurationMs(segments: Segment[], rate: number): number {
 // ─── Segment computation (Steel.dev rules, openSlate-tuned) ─────────────────
 
 /** Events that drive a segment around them ("salient" — visible on output). */
-const SALIENT_KINDS = new Set(["click", "type", "scroll", "hover"]);
+const SALIENT_KINDS = new Set(["click", "type", "scroll", "hover", "highlight"]);
+
+/**
+ * Smart zoom-to-fit for highlight events: pick the zoom such that the
+ * highlighted bbox fills `fillFraction` of the viewport's smaller axis.
+ * Small elements (e.g. a chart icon) zoom further; large elements (a
+ * dashboard panel) zoom less, so all highlighted regions read at a
+ * comparable visual size. Capped at the template's peak (acts as a
+ * ceiling) so even tiny elements don't zoom past the calibrated
+ * restraint cap.
+ *
+ * `fillFraction = 0.7` → bbox occupies 70% of the smaller axis after
+ * zoom. Below 0.5 the highlight feels lost in dead space; above 0.8 it
+ * crowds the frame. 0.7 is the calibrated sweet spot.
+ */
+export function computeHighlightZoom(
+  bbox: { w: number; h: number },
+  viewport: { width: number; height: number },
+  ceiling: number,
+  fillFraction = 0.7,
+): number {
+  if (bbox.w <= 0 || bbox.h <= 0) return Math.min(ceiling, 1.6);
+  // We want bbox.w * zoom ≤ vp.width * fillFraction (so it fits horizontally)
+  // AND bbox.h * zoom ≤ vp.height * fillFraction (so it fits vertically).
+  const zoomX = (viewport.width * fillFraction) / bbox.w;
+  const zoomY = (viewport.height * fillFraction) / bbox.h;
+  const ideal = Math.min(zoomX, zoomY);
+  // Floor at 1.0 (no de-zoom for big elements — just hold wide).
+  return Math.max(1.0, Math.min(ceiling, ideal));
+}
 
 /**
  * Compute segments from events using the lead/trail/merge/split rules:
@@ -226,7 +255,22 @@ export function computeKeyframes(
     const out_t = srcToOut(ev.t_ms, segments, rate);
     if (out_t == null) continue; // event was trimmed out
 
-    const peak = Math.min(tpl.peak, profile.zoom.max_peak);
+    // Smart zoom-to-fit for highlight events: derive the peak from the
+    // bbox of the highlighted element so a small chart icon zooms further
+    // than a large dashboard panel. Falls back to the template peak if
+    // bbox isn't present (e.g., older recordings, or selector missed at
+    // record time but event was still emitted).
+    const ceiling = Math.min(tpl.peak, profile.zoom.max_peak);
+    let peak = ceiling;
+    if (
+      ev.kind === "highlight" &&
+      typeof ev.w === "number" &&
+      typeof ev.h === "number" &&
+      ev.w > 0 &&
+      ev.h > 0
+    ) {
+      peak = computeHighlightZoom({ w: ev.w, h: ev.h }, viewport, ceiling);
+    }
     const fx =
       profile.zoom.pan_to_target && typeof ev.x === "number"
         ? ev.x / viewport.width

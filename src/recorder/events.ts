@@ -12,6 +12,7 @@ export type RecordedEventKind =
   | "hover"
   | "focus"
   | "type"
+  | "highlight"
   | "wait"
   | "frame_start"
   | "frame_end";
@@ -20,9 +21,13 @@ export interface RecordedEvent {
   kind: RecordedEventKind;
   /** ms from start of recording */
   t_ms: number;
-  /** viewport-space coordinates, when applicable (clicks, hovers, type, scroll) */
+  /** viewport-space coordinates, when applicable (clicks, hovers, type, scroll, highlight) */
   x?: number;
   y?: number;
+  /** Bounding-box dimensions in viewport pixels — set by `highlight` events
+   *  so the compositor can size the visual treatment + compute smart zoom-to-fit. */
+  w?: number;
+  h?: number;
   /** CSS selector or URL */
   target?: string;
   /** for input events */

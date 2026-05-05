@@ -113,6 +113,16 @@ export interface ZoomProfile {
     hover: ZoomTemplate;
     scroll: ZoomTemplate;
     navigate: ZoomTemplate;
+    /**
+     * `highlight` action template. Unlike other templates, the actual
+     * peak is computed PER EVENT from the highlighted element's bbox
+     * (smart zoom-to-fit). This template's `peak` field acts as a
+     * CEILING — never zoom further than this even for tiny elements.
+     * The `hold_ms` is the dwell time on the element; longer than
+     * click since the WHOLE point of a highlight is to give the viewer
+     * time to read the content.
+     */
+    highlight: ZoomTemplate;
   };
   pan_to_target: boolean;
   /** principle: follow_through — cursor re-syncs gradually after zoom resolves */

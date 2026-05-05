@@ -13,6 +13,7 @@ export type StepAction =
   | "wait"
   | "scroll"
   | "hover"
+  | "highlight"
   | "wait_for_selector";
 
 export interface PlanStep {
@@ -30,6 +31,12 @@ export interface PlanStep {
   no_zoom?: boolean;
   /** only used in walkthrough plans: which beat does this step belong to */
   beat?: number;
+  /**
+   * For `highlight` action: explicit zoom override, bypasses smart
+   * zoom-to-fit. Use when a specific zoom level matters more than
+   * exactly framing the bbox (rare).
+   */
+  zoom?: number;
 }
 
 export interface DemoPlan {

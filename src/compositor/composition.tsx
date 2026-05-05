@@ -42,6 +42,7 @@ import { Frame } from "./frame.js";
 import { Stage } from "./stage.js";
 import { Flourishes } from "../flourishes/index.js";
 import { ClickHighlight } from "../flourishes/click-highlight.js";
+import { HighlightTreatment } from "../flourishes/highlight-treatment.js";
 
 export interface CompositionProps {
   manifest: RecordingManifest;
@@ -301,6 +302,17 @@ export const PolishComposition: React.FC<CompositionProps> = ({
               }}
               viewport_width={viewport_w}
               viewport_height={viewport_h}
+            />
+            {/* Highlight treatment: pulsing border + glow around the
+                highlighted bbox during the hold. In-Stage so it tracks
+                the camera transform. */}
+            <HighlightTreatment
+              events={visibleEvents}
+              t_ms={out_t_ms}
+              viewport_width={viewport_w}
+              viewport_height={viewport_h}
+              zoom={profile.zoom}
+              brand={profile.brand}
             />
           </Stage>
         </div>

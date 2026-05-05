@@ -765,6 +765,47 @@ async function executeStep(
       // reach here since "navigate" is the first case).
       break;
     }
+    case "highlight": {
+      // Camera-frames a region without clicking. Resolves the bbox,
+      // emits a `highlight` event with bbox dimensions (so the planner
+      // can compute smart zoom-to-fit), and slowly drifts the cursor
+      // to the bbox center as a "the demo is pointing at this" signal.
+      if (!step.selector) {
+        await safeWait(step.expected_duration_ms);
+        break;
+      }
+      const handle = await page.$(step.selector);
+      const box = handle ? await handle.boundingBox() : null;
+      if (!box) {
+        result.status = "selector_missed";
+        result.resolved_at = null;
+        await safeWait(step.expected_duration_ms);
+        break;
+      }
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      result.status = "fired";
+      result.resolved_at = { x: cx, y: cy };
+      // Slow drift (steps: 36) reads as deliberate attention vs the
+      // 18-24 step pace of click/type setup.
+      await page.mouse.move(cx, cy, { steps: 36 });
+      events.push({
+        kind: "highlight",
+        t_ms: tNow(),
+        x: cx,
+        y: cy,
+        w: box.width,
+        h: box.height,
+        step_index: stepIndex,
+        note: step.note,
+        no_zoom: step.no_zoom,
+        synthetic: true,
+      });
+      // Hold the cursor + page state on the highlighted region for
+      // expected_duration_ms so the camera's hold has source frames.
+      await safeWait(step.expected_duration_ms);
+      break;
+    }
     case "wait_for_selector": {
       if (step.selector) {
         await page.waitForSelector(step.selector, { timeout: 10_000 }).catch(() => {});

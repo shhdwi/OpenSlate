@@ -91,6 +91,7 @@ const zoomSchema = z.object({
     hover: zoomTemplateSchema,
     scroll: zoomTemplateSchema,
     navigate: zoomTemplateSchema,
+    highlight: zoomTemplateSchema,
   }),
   pan_to_target: z.boolean(),
   cursor_recover_ms: z.number().min(0).max(1000),

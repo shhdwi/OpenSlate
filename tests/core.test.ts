@@ -11,6 +11,7 @@ import {
   outToSrc,
   srcToOut,
   outputDurationMs,
+  computeHighlightZoom,
 } from "../src/plan/edit-plan.js";
 import { suggestZooms } from "../src/compositor/zoom-suggestions.js";
 import { injectArcWaypoints } from "../src/utils/springs.js";
@@ -698,6 +699,12 @@ describe("init-template drift protection", () => {
     expect(tpl).toMatch(/connected_focal_dist_max:\s*0\.35/);
   });
 
+  it("zoom template for `highlight` is present (camera-frame an element)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/highlight:\s*\{[\s\S]*?peak:\s*2/);
+    expect(tpl).toMatch(/highlight:\s*\{[\s\S]*?hold_ms:\s*2000/);
+  });
+
   it("includes contextual_swap (cursor sprite swap setting)", () => {
     const tpl = renderInitTemplate();
     expect(tpl).toMatch(/contextual_swap:\s*true/);
@@ -1012,6 +1019,81 @@ describe("cursor sprite manifest <-> SVG geometry contract", () => {
       expect(opening[0]).not.toMatch(/\swidth\s*=/);
       expect(opening[0]).not.toMatch(/\sheight\s*=/);
     }
+  });
+});
+
+describe("highlight action: smart zoom-to-fit + envelope", () => {
+  const profile = DEFAULT_POLISH_PROFILE;
+  const viewport = { width: 1280, height: 800 };
+
+  it("zooms a small element more than a large one", () => {
+    const small = computeHighlightZoom({ w: 80, h: 60 }, viewport, 2.0);
+    const large = computeHighlightZoom({ w: 800, h: 400 }, viewport, 2.0);
+    expect(small).toBeGreaterThan(large);
+  });
+
+  it("caps zoom at the ceiling for tiny elements", () => {
+    // 20×20 element on 1280×800 viewport: ideal zoom = 0.7 * 800 / 20 = 28
+    // — should be capped at the ceiling (2.0).
+    const z = computeHighlightZoom({ w: 20, h: 20 }, viewport, 2.0);
+    expect(z).toBeCloseTo(2.0, 3);
+  });
+
+  it("returns 1.0 (no zoom) for elements bigger than the fillFraction window", () => {
+    // An element that already fills more than 70% of the viewport doesn't
+    // need a zoom.
+    const z = computeHighlightZoom({ w: 1200, h: 760 }, viewport, 2.0);
+    expect(z).toBe(1);
+  });
+
+  it("respects ceiling regardless of bbox", () => {
+    // Even with a small bbox, never exceeds the ceiling argument.
+    const z = computeHighlightZoom({ w: 10, h: 10 }, viewport, 1.6);
+    expect(z).toBeLessThanOrEqual(1.6);
+  });
+
+  it("highlight events generate a zoom envelope using bbox-derived peak", () => {
+    const events: RecordedEvent[] = [
+      {
+        kind: "highlight",
+        t_ms: 5000,
+        x: 640,
+        y: 400,
+        w: 200,
+        h: 100,
+        step_index: 0,
+        synthetic: true,
+      },
+    ];
+    const segs = computeSegments(events, 10000, profile);
+    const kf = computeKeyframes(events, segs, profile, viewport);
+    const peakKf = kf.find((k) => k.zoom > 1);
+    expect(peakKf).toBeDefined();
+    const expected = computeHighlightZoom(
+      { w: 200, h: 100 },
+      viewport,
+      Math.min(profile.zoom.templates.highlight.peak, profile.zoom.max_peak),
+    );
+    expect(peakKf!.zoom).toBeCloseTo(expected, 3);
+  });
+
+  it("highlight is salient — drives a segment around it", () => {
+    const events: RecordedEvent[] = [
+      {
+        kind: "highlight",
+        t_ms: 5000,
+        x: 640,
+        y: 400,
+        w: 200,
+        h: 100,
+        step_index: 0,
+        synthetic: true,
+      },
+    ];
+    const segs = computeSegments(events, 10000, profile);
+    expect(segs.length).toBe(1);
+    expect(segs[0]!.src_start_ms).toBeLessThan(5000);
+    expect(segs[0]!.src_end_ms).toBeGreaterThan(5000);
   });
 });
 

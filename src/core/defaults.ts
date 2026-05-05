@@ -110,6 +110,21 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
         hold_ms: 0,
         duration_out_ms: 0,
       },
+      // Highlight: camera-frames a specific element without clicking it,
+      // for "look at this dashboard widget" / "the AI summary just appeared
+      // here" moments. Smart zoom-to-fit computes the actual peak per
+      // event from the element's bbox (`computeHighlightZoom` in
+      // edit-plan.ts). This `peak` is the CEILING — small elements don't
+      // zoom past it. Hold is longer than click because the WHOLE point
+      // is for the viewer to read the highlighted content.
+      highlight: {
+        peak: 2.0,
+        ease_in: "quart_out",
+        ease_out: "cubic_in_out",
+        duration_in_ms: 700,
+        hold_ms: 2000,
+        duration_out_ms: 500,
+      },
     },
     pan_to_target: true,
     cursor_recover_ms: 250, // principle 7
