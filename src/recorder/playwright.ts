@@ -591,20 +591,42 @@ async function executeStep(
     }
     case "type": {
       // Move the mouse to the target field so the cursor visually lands
-      // there, emit a synthetic "type" event for auto-zoom, then focus +
-      // type. We use page.focus (not page.click) to avoid emitting a
-      // DOM-listener click that would confuse the click→step mapping.
+      // there, then click to focus, then type via keyboard.
+      //
+      // Why click + page.keyboard.type, NOT page.type(selector, text):
+      // sites like Google Flights render duplicate inputs with the same
+      // aria-label — a collapsed one and an expanded popup one. The click
+      // opens the popup; typing should land in WHATEVER IS FOCUSED, which
+      // is the popup input. `page.type(selector, text)` re-targets the
+      // first DOM match (the collapsed one) and silently swallows typed
+      // chars. Using focused-target keyboard.type is robust against this
+      // class of UI (any combobox / autocomplete popup pattern).
       if (step.selector) {
         const center = await resolveCenter(step.selector);
         if (center) {
           await page.mouse.move(center.x, center.y, { steps: 18 });
           emitInteraction("type", center.x, center.y);
+          await safeWait(150);
+          await page.mouse.click(center.x, center.y);
+        } else {
+          await page.click(step.selector).catch(() => {});
         }
-        await page.focus(step.selector).catch(() => {});
-        await page.fill(step.selector, "").catch(() => {});
-        await page.type(step.selector, step.value ?? "", { delay: 30 });
+        await safeWait(400); // let popup/expanded UI settle
+        // Clear the field's current content via select-all + delete (only
+        // if there's existing content; setting empty value can rebuild
+        // controlled inputs and lose focus).
+        const existingValue = await page
+          .$eval(step.selector, (el) => (el as HTMLInputElement).value || "")
+          .catch(() => "");
+        if (existingValue.length > 0) {
+          await page.keyboard.press("ControlOrMeta+a").catch(() => {});
+          await page.keyboard.press("Delete").catch(() => {});
+        }
+        await page.keyboard.type(step.value ?? "", { delay: 30 });
       }
-      await safeWait(Math.max(0, step.expected_duration_ms - (step.value ?? "").length * 30));
+      await safeWait(
+        Math.max(0, step.expected_duration_ms - (step.value ?? "").length * 30 - 550),
+      );
       break;
     }
     case "scroll": {
