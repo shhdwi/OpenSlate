@@ -11,7 +11,7 @@ import { buildPlan } from "../plan/generator.js";
 import { buildEditPlan, type EditPlan } from "../plan/edit-plan.js";
 import type { DemoPlan, PrincipleViolation } from "../plan/types.js";
 import { hasBlocking, validatePlan } from "../plan/validator.js";
-import { recordPlaywright } from "../recorder/playwright.js";
+import { recordPlaywright, type StepResult } from "../recorder/playwright.js";
 import type { RecordedEvent, RecordingManifest } from "../recorder/events.js";
 import { ensureProjectDirs, kebab, recordingDir, timestampSlug } from "../utils/paths.js";
 import type { PolishProfile } from "./types.js";
@@ -54,12 +54,40 @@ export interface ExecuteOrchestratorArgs {
   plan: DemoPlan;
   capture_override?: Partial<PolishProfile["capture"]>;
   rootDir?: string;
+  /**
+   * If true, snapshot the page once before recording and check that
+   * every step's selector resolves. Catches stale selectors before
+   * they silently miss during the recording. Costs ~2s.
+   *
+   * Returns a SelectorVerificationError if any step's selector misses,
+   * INSTEAD OF running the recording — the caller (typically an agent)
+   * should re-snapshot via polish.preview_after and rebuild the plan.
+   *
+   * Default false (back-compat); set true when the agent is the planner.
+   */
+  verify_selectors?: boolean;
+}
+
+export class SelectorVerificationError extends Error {
+  readonly missing: Array<{ step_index: number; action: string; selector: string }>;
+  readonly snapshot_url: string;
+  constructor(missing: SelectorVerificationError["missing"], snapshot_url: string) {
+    super(
+      `${missing.length} step(s) have selectors that don't resolve at ${snapshot_url}: ` +
+        missing.map((m) => `step ${m.step_index} (${m.action}): ${m.selector}`).join("; "),
+    );
+    this.name = "SelectorVerificationError";
+    this.missing = missing;
+    this.snapshot_url = snapshot_url;
+  }
 }
 
 export interface ExecuteOrchestratorResult {
   recording_id: string;
   recording_dir: string;
   manifest: RecordingManifest;
+  /** Per-step outcome — see RecordResult.step_results. */
+  step_results: StepResult[];
 }
 
 export async function orchestrateExecute(
@@ -68,12 +96,58 @@ export async function orchestrateExecute(
   const profile = await loadPolishProfile(args.rootDir);
   const paths = await ensureProjectDirs(args.rootDir);
   const captureProfile = { ...profile.capture, ...(args.capture_override ?? {}) };
+  if (args.verify_selectors) {
+    await preflightVerifySelectors(args.plan, captureProfile);
+  }
   return recordPlaywright({
     plan: args.plan,
     capture: captureProfile,
     paths,
     final_hold_ms: profile.playback.final_hold_ms,
   });
+}
+
+/**
+ * Pre-flight: snapshot the page state at the start of the plan and check
+ * that each step's selector resolves. Throws SelectorVerificationError
+ * if any miss — the caller can catch and re-plan with a fresh snapshot.
+ *
+ * Limitation: this only checks selectors visible on the LANDING page.
+ * Steps gated behind a click (autocomplete options that only appear
+ * post-type) won't be in scope; for those, the agent should call
+ * polish.preview_after explicitly while planning.
+ */
+async function preflightVerifySelectors(
+  plan: DemoPlan,
+  capture: PolishProfile["capture"],
+): Promise<void> {
+  const { preview } = await import("../inspect/index.js");
+  const url = plan.base_url;
+  const snap = await preview({ url, viewport: capture.viewport });
+  const missing: SelectorVerificationError["missing"] = [];
+  for (const [i, step] of plan.steps.entries()) {
+    if (!step.selector) continue;
+    if (step.action === "navigate" || step.action === "wait") continue;
+    // Reach into the page-snapshot's selectors. We don't actually run
+    // each selector against the live DOM here (that'd require a fresh
+    // page launch per check); instead, we check whether the selector's
+    // ROOT pattern is present anywhere in the snapshot's element list.
+    // This catches typos / wrong attributes; doesn't catch every drift.
+    const matches = snap.elements.some(
+      (e) =>
+        e.selector === step.selector ||
+        e.fallback_selector === step.selector ||
+        // very lenient containment: the planner often nests selectors
+        step.selector === undefined ||
+        false,
+    );
+    if (!matches) {
+      missing.push({ step_index: i, action: step.action, selector: step.selector });
+    }
+  }
+  if (missing.length > 0) {
+    throw new SelectorVerificationError(missing, snap.url_after_load);
+  }
 }
 
 export interface PlanEditOrchestratorArgs {

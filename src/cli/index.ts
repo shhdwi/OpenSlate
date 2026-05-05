@@ -20,6 +20,7 @@ import {
   orchestratePlanEdit,
 } from "../core/orchestrate.js";
 import { summarizeEditPlan } from "../plan/edit-plan.js";
+import { preview } from "../inspect/index.js";
 import { startMcpServer } from "../mcp/index.js";
 import { ensureProjectDirs, recordingDir } from "../utils/paths.js";
 import { initProject } from "./init.js";
@@ -113,6 +114,44 @@ program
     });
     console.log(`✓ ${path.relative(process.cwd(), result.edit_plan_path)}`);
     console.log(summarizeEditPlan(result.edit_plan));
+  });
+
+program
+  .command("preview <url>")
+  .description(
+    "Inspect a page and print interactive elements with stable selectors. Use to verify selectors when authoring a plan by hand, or to see what the agent would see via polish_preview.",
+  )
+  .option(
+    "-w, --viewport <wxh>",
+    'viewport size, e.g. "1440x900" (default 1440x900)',
+    "1440x900",
+  )
+  .option("--json", "output JSON only (no human summary)", false)
+  .action(async (url: string, opts: { viewport: string; json?: boolean }) => {
+    const m = /^(\d+)x(\d+)$/.exec(opts.viewport);
+    const viewport = m
+      ? { width: Number.parseInt(m[1]!, 10), height: Number.parseInt(m[2]!, 10) }
+      : { width: 1440, height: 900 };
+    const result = await preview({ url, viewport });
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(`URL after load: ${result.url_after_load}`);
+    console.log(`Title: ${result.page_title}`);
+    console.log(`Viewport: ${result.viewport.width}×${result.viewport.height}`);
+    if (result.has_consent_banner) console.log("⚠ consent banner detected");
+    if (result.notes.length > 0) {
+      console.log("\nNotes:");
+      for (const n of result.notes) console.log(`  • ${n}`);
+    }
+    console.log(`\n${result.elements.length} interactive elements:`);
+    for (const e of result.elements) {
+      const visMark = e.in_viewport ? " " : "↓";
+      console.log(
+        `  [${e.id.toString().padStart(2)}] ${visMark} ${e.role.padEnd(10)} '${e.name.slice(0, 40).padEnd(40)}'  ${e.selector}`,
+      );
+    }
   });
 
 program

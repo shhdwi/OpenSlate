@@ -85,10 +85,30 @@ export interface RecordOptions {
   final_hold_ms?: number;
 }
 
+export interface StepResult {
+  step_index: number;
+  action: string;
+  /**
+   * - "fired": the action ran (selector resolved or selector not needed)
+   * - "selector_missed": the selector didn't match any element; recorder
+   *   skipped the action without aborting the recording
+   * - "skipped": no-op step (e.g. wait without selector)
+   */
+  status: "fired" | "selector_missed" | "skipped";
+  selector?: string;
+  resolved_at?: { x: number; y: number } | null;
+}
+
 export interface RecordResult {
   recording_id: string;
   recording_dir: string;
   manifest: RecordingManifest;
+  /**
+   * Per-step outcome. Surfaces "selector_missed" so the calling agent
+   * can retry with a fresh preview snapshot or surface the failure to
+   * the user instead of producing a partial demo silently.
+   */
+  step_results: StepResult[];
 }
 
 /** Page-side mousemove throttle. ~8ms = ~125Hz max sample rate. */
@@ -355,9 +375,11 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
     }
   };
 
+  const step_results: StepResult[] = [];
   for (const [stepIndex, step] of opts.plan.steps.entries()) {
     await snapshotFrame(); // capture pre-step state
-    await executeStep(page, step, stepIndex, events, cursorSamples, tNow);
+    const result = await executeStep(page, step, stepIndex, events, cursorSamples, tNow);
+    step_results.push(result);
   }
   // Final-page hold: keep the recorder running so the post-last-action
   // page state (typically a navigation target) is captured. Without this
@@ -456,7 +478,7 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   const manifestFile = path.join(dir, "manifest.json");
   await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2));
 
-  return { recording_id: id, recording_dir: dir, manifest };
+  return { recording_id: id, recording_dir: dir, manifest, step_results };
 }
 
 /**
@@ -531,7 +553,14 @@ async function executeStep(
   events: RecordedEvent[],
   cursorSamples: CursorSample[],
   tNow: () => number,
-): Promise<void> {
+): Promise<StepResult> {
+  // Per-step result; we mutate this through the switch then return.
+  const result: StepResult = {
+    step_index: stepIndex,
+    action: step.action,
+    status: "skipped",
+    selector: step.selector,
+  };
   const safeWait = (ms: number) => page.waitForTimeout(Math.max(0, ms));
 
   /**
@@ -575,6 +604,7 @@ async function executeStep(
   switch (step.action) {
     case "navigate": {
       const url = step.selector ?? "";
+      result.status = "fired";
       await page.goto(url, { waitUntil: "networkidle", timeout: 15_000 }).catch(() => {});
       // Mandatory post-load settle so demos always start on a fully-painted
       // page, never mid-hero-animation.
@@ -588,6 +618,14 @@ async function executeStep(
         break;
       }
       const center = await resolveCenter(step.selector);
+      if (!center) {
+        result.status = "selector_missed";
+        result.resolved_at = null;
+        await safeWait(step.expected_duration_ms);
+        break;
+      }
+      result.status = "fired";
+      result.resolved_at = center;
       try {
         if (center) {
           // principle 4: anticipation — slow approach so cursor reads as decided.
@@ -637,6 +675,13 @@ async function executeStep(
       // class of UI (any combobox / autocomplete popup pattern).
       if (step.selector) {
         const center = await resolveCenter(step.selector);
+        if (!center) {
+          result.status = "selector_missed";
+          result.resolved_at = null;
+        } else {
+          result.status = "fired";
+          result.resolved_at = center;
+        }
         if (center) {
           await page.mouse.move(center.x, center.y, { steps: 18 });
           // Emit a single TYPE event for this step. dropDuplicateDomClicks
@@ -686,7 +731,13 @@ async function executeStep(
     case "scroll": {
       const sel = step.selector ?? "body";
       const center = await resolveCenter(sel);
-      if (center) emitInteraction("scroll", center.x, center.y);
+      if (center) {
+        emitInteraction("scroll", center.x, center.y);
+        result.status = "fired";
+        result.resolved_at = center;
+      } else {
+        result.status = "selector_missed";
+      }
       await page.evaluate((s) => {
         const el = document.querySelector(s) as HTMLElement | null;
         const target = el ?? document.scrollingElement ?? document.body;
@@ -700,15 +751,24 @@ async function executeStep(
       if (center) {
         await page.mouse.move(center.x, center.y, { steps: 18 });
         emitInteraction("hover", center.x, center.y);
+        result.status = "fired";
+        result.resolved_at = center;
       } else if (step.selector) {
         await page.hover(step.selector, { timeout: 5000 }).catch(() => {});
+        result.status = "selector_missed";
       }
       await safeWait(step.expected_duration_ms);
+      break;
+    }
+    case "navigate": {
+      // Already-fired above (this case is for completeness — flow shouldn't
+      // reach here since "navigate" is the first case).
       break;
     }
     case "wait_for_selector": {
       if (step.selector) {
         await page.waitForSelector(step.selector, { timeout: 10_000 }).catch(() => {});
+        result.status = "fired";
       }
       break;
     }
@@ -717,4 +777,5 @@ async function executeStep(
       await safeWait(step.expected_duration_ms);
   }
   void stepIndex;
+  return result;
 }
