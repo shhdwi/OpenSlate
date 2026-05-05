@@ -1014,3 +1014,36 @@ describe("cursor sprite manifest <-> SVG geometry contract", () => {
     }
   });
 });
+
+describe("inspect: preview against example.com (integration)", () => {
+  // Network-dependent integration test. Runs against example.com — a
+  // tiny stable page with one link ("More information..."). Skip in CI
+  // by setting OPENSLATE_SKIP_NETWORK_TESTS=1.
+  const skip = process.env.OPENSLATE_SKIP_NETWORK_TESTS === "1";
+  const it_ = skip ? it.skip : it;
+
+  it_("returns at least one link with a non-empty selector", async () => {
+    const { preview } = await import("../src/inspect/index.js");
+    const result = await preview({ url: "https://example.com" });
+    expect(result.elements.length).toBeGreaterThan(0);
+    // example.com has exactly one link ("More information...").
+    const links = result.elements.filter((e) => e.role === "link");
+    expect(links.length).toBeGreaterThanOrEqual(1);
+    const link = links[0]!;
+    expect(link.selector).toBeTruthy();
+    expect(link.bbox.w).toBeGreaterThan(0);
+    expect(link.bbox.h).toBeGreaterThan(0);
+    expect(link.in_viewport).toBe(true);
+  }, 30_000);
+
+  it_("returns viewport + url_after_load", async () => {
+    const { preview } = await import("../src/inspect/index.js");
+    const result = await preview({
+      url: "https://example.com",
+      viewport: { width: 1280, height: 800 },
+    });
+    expect(result.viewport).toEqual({ width: 1280, height: 800 });
+    expect(result.url_after_load).toMatch(/example\.com/);
+    expect(result.page_title).toBeTruthy();
+  }, 30_000);
+});

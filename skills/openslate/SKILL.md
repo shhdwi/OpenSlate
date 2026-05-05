@@ -24,16 +24,47 @@ every rule below traces to one of the 10 motion-design principles.
 
 ## Available tools
 
-You have six MCP tools:
+You have eight MCP tools:
 
 | Tool | Use it for |
 |---|---|
+| `polish_preview` | **Inspect a page — REQUIRED before authoring any plan with click/type.** Returns interactive elements with stable selectors. Never guess selectors. |
+| `polish_preview_after` | Same as `polish_preview` but runs prior actions first — for autocomplete dropdowns, modals, post-nav state. |
 | `record_plan` | Build and validate a DemoPlan. ALWAYS call before `record_execute`. |
-| `record_execute` | Run the plan via Playwright. Captures frames + events. |
+| `record_execute` | Run the plan via Playwright. Captures frames + events. Returns `step_results` per step (fired / selector_missed). |
 | `record_polish` | (v1: no-op; reserved for v1.5) |
 | `record_export` | Render polished mp4 / gif from a recording. |
 | `record_list` | List recordings in this project. |
 | `record_status` | Check whether a recording exists and is done. |
+
+## CRITICAL — never guess selectors
+
+When the user describes a demo ("click Sign Up, fill in email"), DO NOT guess
+CSS selectors based on what you imagine the page looks like. Instead:
+
+1. Call `polish_preview({ url })` to get the actual interactive elements
+   on the landing page.
+2. Read the returned `elements[]` array — each has `role`, `name` (the
+   accessible label the user would describe), `selector` (use VERBATIM in
+   plan steps), and `bbox`.
+3. Match the user's described intent against the `name` fields. Use the
+   matched element's `selector` exactly as returned.
+4. For UI states that only appear after another action (autocomplete
+   dropdowns, modals, post-click forms), call `polish_preview_after({ url,
+   prior_actions: [...] })` with the steps that produced that state, and
+   pick from the new snapshot.
+
+Why this matters: the recorder doesn't fail loudly on a missed selector —
+it silently skips the step. Guessed selectors produce demos with missing
+actions. The `step_results` from `record_execute` reports misses; if you
+see `status: "selector_missed"`, re-snapshot and retry, don't ship a
+partial demo.
+
+When `record_execute` is called with `verify_selectors: true`, the
+recorder pre-flights every selector against a fresh snapshot and refuses
+to record if any miss. Use this when you've authored the plan from
+preview output and want to confirm no DOM drift before spending the 30s
+on an actual recording.
 
 ## Pre-record questions (ask up to three)
 
@@ -113,10 +144,22 @@ on the navigate step's `expected_duration_ms` — it gets trimmed anyway.
 - Verify the dev server is reachable (common ports: 3000, 5173, 4000, 8080).
 - Check that `capture.target` and `frame.style` agree (mobile capture → phone frame).
 
+### Step 2.5 — Inspect before authoring (MANDATORY)
+Call `polish_preview({ url: base_url })` to get the actual interactive
+elements on the landing page. For each user-described action ("click Sign
+Up"), match against the returned `elements[].name` and copy the matching
+`selector` verbatim into the plan. For multi-step flows where later
+actions depend on earlier UI states (autocomplete options, modal
+content), call `polish_preview_after` with the actions taken so far.
+
 ### Step 3 — Build the plan
 Call `record_plan` with feature description, base URL, target duration, and
-the step list. Steps are Playwright actions (navigate, click, type, scroll,
-hover, wait, wait_for_selector).
+the step list. Each step's `selector` should come from a `polish_preview`
+or `polish_preview_after` snapshot — not from your imagination.
+
+Steps are Playwright actions: navigate, click, type, scroll, hover,
+highlight (camera-frames a region without clicking — see "Highlight"),
+wait, wait_for_selector.
 
 The tool returns the plan + any `violations`. Check `is_valid`. If false,
 read the violations and propose fixes:
