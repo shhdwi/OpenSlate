@@ -63,7 +63,11 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
   zoom: {
     templates: {
       click: {
-        peak: 1.5,
+        // 1.6× is the calibrated default — reads "polished demo" without
+        // the "punchy product story" feel of 2.0×. Matches max_peak so
+        // there's no surprise clamping. User calibrated this through
+        // multiple Google Flights / nanoindex iterations.
+        peak: 1.6,
         ease_in: "quart_out",
         ease_out: "cubic_in_out",
         duration_in_ms: 600,
@@ -81,7 +85,7 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
         duration_out_ms: 500,
       },
       hover: {
-        peak: 1.5,
+        peak: 1.6,
         ease_in: "quart_out",
         ease_out: "cubic_in_out",
         duration_in_ms: 600,
@@ -136,6 +140,13 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     segment_trail_ms: 1500,
     segment_merge_below_ms: 2000,
     segment_split_above_ms: 3000,
+    // Final-page hold: after the last plan step (which often clicks a
+    // CTA that loads a new page), wait this long before ending the
+    // recording. Also lengthens the last segment's trail so the new
+    // page is visible long enough in the output. 3s is calibrated to
+    // cover a typical SPA route change + initial paint + the viewer
+    // reading the destination page; bump higher for slow pages.
+    final_hold_ms: 3000,
   },
 
   // principles 1/2/4
@@ -216,10 +227,14 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
       color: "brand.accent",
       duration_ms: 700,
     },
+    // Step badges OFF by default — the "1, 2, 3..." badge in the corner
+    // reads as instructional / tutorial rather than as a polished demo.
+    // Re-enable per project (`enabled_on: "walkthrough_only"`) when you
+    // explicitly want a numbered-step explainer.
     step_badges: {
       style: "circular_numeric",
       position: "top_left",
-      enabled_on: "walkthrough_only",
+      enabled_on: "off",
     },
     scene_title_card: {
       style: "lower_third_reveal",

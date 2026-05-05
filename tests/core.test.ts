@@ -252,11 +252,25 @@ describe("edit-plan: segment computation rules (Steel.dev pattern)", () => {
     const segs = computeSegments(events, REC, profile);
     expect(segs.length).toBe(1);
     expect(segs[0]?.src_start_ms).toBe(5000 - profile.playback.segment_lead_ms);
-    expect(segs[0]?.src_end_ms).toBe(5000 + profile.playback.segment_trail_ms);
+    // Single (and therefore last) salient event uses final_hold_ms for trail.
+    expect(segs[0]?.src_end_ms).toBe(5000 + profile.playback.final_hold_ms);
+  });
+
+  it("last salient event extends to final_hold_ms (longer page-load tail)", () => {
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 5000, x: 100, y: 100, step_index: 0 },
+    ];
+    const segs = computeSegments(events, REC, profile);
+    // Last event's trail should equal final_hold_ms, not segment_trail_ms.
+    expect(segs[0]?.src_end_ms - 5000).toBe(profile.playback.final_hold_ms);
+    expect(profile.playback.final_hold_ms).toBeGreaterThan(
+      profile.playback.segment_trail_ms,
+    );
   });
 
   it("merges two close salient events into one segment", () => {
-    // 1500ms apart → gap ~0ms after lead/trail → merges
+    // 1500ms apart → gap ~0ms after lead/trail → merges. Last event uses
+    // final_hold_ms (3000) for trail.
     const events: RecordedEvent[] = [
       { kind: "click", t_ms: 5000, x: 100, y: 100, step_index: 0 },
       { kind: "click", t_ms: 6500, x: 200, y: 200, step_index: 1 },
@@ -264,7 +278,7 @@ describe("edit-plan: segment computation rules (Steel.dev pattern)", () => {
     const segs = computeSegments(events, REC, profile);
     expect(segs.length).toBe(1);
     expect(segs[0]?.src_start_ms).toBe(4500);
-    expect(segs[0]?.src_end_ms).toBe(8000);
+    expect(segs[0]?.src_end_ms).toBe(6500 + profile.playback.final_hold_ms);
   });
 
   it("keeps two salient events with a large gap as separate segments", () => {
@@ -647,14 +661,14 @@ describe("init-template drift protection", () => {
     expect(tpl).toMatch(/path_arc_amount:\s*0\.12/);
   });
 
-  it("zoom templates serialize click peak 1.5 with asymmetric durations", () => {
+  it("zoom templates serialize click peak 1.6 with asymmetric durations (calibrated default)", () => {
     const tpl = renderInitTemplate();
-    expect(tpl).toMatch(/click:\s*\{[\s\S]*?peak:\s*1\.5/);
+    expect(tpl).toMatch(/click:\s*\{[\s\S]*?peak:\s*1\.6/);
     expect(tpl).toMatch(/duration_in_ms:\s*600/);
     expect(tpl).toMatch(/duration_out_ms:\s*400/);
   });
 
-  it("zoom template for type uses peak 2.0 (highest zoom)", () => {
+  it("zoom template for type uses peak 2.0 (highest zoom intent; clamps to max_peak)", () => {
     const tpl = renderInitTemplate();
     expect(tpl).toMatch(/type:\s*\{[\s\S]*?peak:\s*2/);
   });
@@ -667,6 +681,21 @@ describe("init-template drift protection", () => {
   it("zoom max_peak: 1.6 (restraint cap)", () => {
     const tpl = renderInitTemplate();
     expect(tpl).toMatch(/max_peak:\s*1\.6/);
+  });
+
+  it("step badges OFF by default (not 'walkthrough_only')", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/step_badges:\s*\{[\s\S]*?enabled_on:\s*"off"/);
+  });
+
+  it("playback.final_hold_ms: 3000 (final-page-load tail)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/final_hold_ms:\s*3000/);
+  });
+
+  it("zoom.connected_focal_dist_max: 0.35 (pan-instead-of-thrash threshold)", () => {
+    const tpl = renderInitTemplate();
+    expect(tpl).toMatch(/connected_focal_dist_max:\s*0\.35/);
   });
 
   it("includes contextual_swap (cursor sprite swap setting)", () => {

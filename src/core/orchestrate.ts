@@ -72,6 +72,7 @@ export async function orchestrateExecute(
     plan: args.plan,
     capture: captureProfile,
     paths,
+    final_hold_ms: profile.playback.final_hold_ms,
   });
 }
 

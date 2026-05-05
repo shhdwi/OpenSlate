@@ -144,6 +144,7 @@ export function computeSegments(
 ): Segment[] {
   const lead = profile.playback.segment_lead_ms;
   const trail = profile.playback.segment_trail_ms;
+  const finalHold = profile.playback.final_hold_ms;
   const mergeBelow = profile.playback.segment_merge_below_ms;
 
   const salient = events.filter(
@@ -156,10 +157,14 @@ export function computeSegments(
     return [{ src_start_ms: 0, src_end_ms: recording_duration_ms }];
   }
 
-  // Initial windows.
-  let segments: Segment[] = salient.map((e) => ({
+  // Initial windows. The LAST salient event uses `final_hold_ms` for its
+  // trail (longer than mid-flow trail) so the post-final-action page —
+  // typically a navigation target loaded by the click — is visible long
+  // enough for the viewer to read the destination state.
+  const lastIdx = salient.length - 1;
+  let segments: Segment[] = salient.map((e, i) => ({
     src_start_ms: Math.max(0, e.t_ms - lead),
-    src_end_ms: Math.min(recording_duration_ms, e.t_ms + trail),
+    src_end_ms: Math.min(recording_duration_ms, e.t_ms + (i === lastIdx ? finalHold : trail)),
   }));
   segments.sort((a, b) => a.src_start_ms - b.src_start_ms);
 

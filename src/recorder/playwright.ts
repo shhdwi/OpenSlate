@@ -76,6 +76,13 @@ export interface RecordOptions {
   paths: ProjectPaths;
   /** Override the recording id (default: plan.id + timestamp) */
   recording_id?: string;
+  /**
+   * Hold (ms) after the last plan step before the recorder stops so the
+   * final-page state (e.g. flight detail, signup confirmation, results
+   * load) is captured. Mirrors profile.playback.final_hold_ms — passed
+   * through by the orchestrator.
+   */
+  final_hold_ms?: number;
 }
 
 export interface RecordResult {
@@ -351,6 +358,24 @@ export async function recordPlaywright(opts: RecordOptions): Promise<RecordResul
   for (const [stepIndex, step] of opts.plan.steps.entries()) {
     await snapshotFrame(); // capture pre-step state
     await executeStep(page, step, stepIndex, events, cursorSamples, tNow);
+  }
+  // Final-page hold: keep the recorder running so the post-last-action
+  // page state (typically a navigation target) is captured. Without this
+  // the recorder cuts off ~1.5s after the last click, often before the
+  // destination page finishes painting.
+  const finalHoldMs = opts.final_hold_ms ?? 3000;
+  if (finalHoldMs > 0) {
+    // Snapshot at intervals during the hold so any visual change that
+    // happens during page-load (network responses, animations resolving)
+    // gets captured. CDP is delta-emitted; explicit snapshots fill gaps.
+    const interval = 1000;
+    let waited = 0;
+    while (waited < finalHoldMs) {
+      const dt = Math.min(interval, finalHoldMs - waited);
+      await page.waitForTimeout(dt);
+      await snapshotFrame();
+      waited += dt;
+    }
   }
   await snapshotFrame(); // capture final state after last step
 

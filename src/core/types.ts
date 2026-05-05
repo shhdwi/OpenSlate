@@ -158,6 +158,16 @@ export interface PlaybackProfile {
   segment_merge_below_ms: number;
   /** A gap of this size or more is treated as dead time and split. */
   segment_split_above_ms: number;
+  /**
+   * Tail held after the LAST plan step before the recorder stops. Also
+   * extends the last salient event's segment trail to this value, so
+   * the final page (e.g. flight detail, signup confirmation, results
+   * loading state) is visible long enough to read in the output. Set
+   * higher than `segment_trail_ms` because the last action often
+   * triggers a page load whose render takes longer than mid-flow
+   * actions. Default 3000ms.
+   */
+  final_hold_ms: number;
 }
 
 // ─── Captions ────────────────────────────────────────────────────────────────

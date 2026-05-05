@@ -116,6 +116,7 @@ const playbackSchema = z.object({
   segment_trail_ms: z.number().min(0).max(5000),
   segment_merge_below_ms: z.number().min(0).max(10000),
   segment_split_above_ms: z.number().min(0).max(15000),
+  final_hold_ms: z.number().min(0).max(15000).default(3000),
 });
 
 const captionsSchema = z.object({
