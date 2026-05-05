@@ -296,7 +296,7 @@ export function computeKeyframes(
  * dip between two consecutive zoom envelopes into a sustained zoom that
  * pans focal_a → focal_b.
  *
- * Two independent triggers (either suffices):
+ * Triggers (either of A/B suffices, BUT C blocks):
  *
  *   (a) TIME-CLOSE: post_a → pre_b gap on the OUTPUT timeline is below
  *       `connected_gap_ms`. Original Recordly-pattern check — meaningful
@@ -304,17 +304,24 @@ export function computeKeyframes(
  *
  *   (b) SPACE-CLOSE: focal distance between the two peaks (in viewport-
  *       normalized units, 0..√2) is below `connected_focal_dist_max`.
- *       This is the rule that matters for form-internal flows: typing
- *       in a destination field then clicking an autocomplete option
- *       below it, or moving across a row of date fields. Without this,
- *       every adjacent action causes a visually annoying zoom-out +
- *       zoom-in even when the second focal is just inches away.
+ *       Form-internal flows (typing a destination, then clicking an
+ *       autocomplete option just below; tabbing across date fields) all
+ *       fall well under this threshold.
+ *
+ *   (c) SCENE-BREAK BLOCK: if a navigation event (URL change → new page
+ *       loaded) occurred between the two envelopes, NEVER collapse —
+ *       force the zoom-out + zoom-in so the new page enters at wide.
+ *       New page = new scene; the camera should re-establish the view.
+ *
+ * `navigationOutTimes` is the list of navigation event times in OUTPUT
+ * time. Pass an empty array to disable scene-break blocking.
  *
  * Exported for unit testing.
  */
 export function applyConnectedPan(
   keyframes: CameraKeyframe[],
   profile: PolishProfile,
+  navigationOutTimes: number[] = [],
 ): CameraKeyframe[] {
   const gap = profile.zoom.connected_gap_ms / profile.playback.rate;
   const focalDistMax = profile.zoom.connected_focal_dist_max;
@@ -338,13 +345,18 @@ export function applyConnectedPan(
       nC.zoom > 1.0 &&
       Math.abs(k.zoom - nC.zoom) < 0.001
     ) {
+      // Scene-break: any navigation between k.out_t_ms and nC.out_t_ms
+      // forces the dip to stay (camera resets at the page transition).
+      const sceneBreak = navigationOutTimes.some(
+        (nt) => nt >= k.out_t_ms && nt <= nC.out_t_ms,
+      );
       const timeClose = nB.out_t_ms - nA.out_t_ms <= gap;
       const focalDist = Math.hypot(
         nC.focal_x - k.focal_x,
         nC.focal_y - k.focal_y,
       );
       const spaceClose = focalDist <= focalDistMax;
-      if (timeClose || spaceClose) {
+      if (!sceneBreak && (timeClose || spaceClose)) {
         // Replace nA + nB with a single PAN keyframe at nA's time, holding
         // peak zoom across the bridge. nC stays as the next peak — its
         // ease drives the camera's pan curve from k's focal to nC's.
@@ -397,7 +409,14 @@ export function buildEditPlan(opts: {
   const { recording_id, manifest, events, profile } = opts;
   const segments = computeSegments(events, manifest.duration_ms, profile);
   const rawKeyframes = computeKeyframes(events, segments, profile, manifest.viewport);
-  const keyframes = applyConnectedPan(rawKeyframes, profile);
+  // Map navigation events to OUTPUT time so the connected-pan post-pass
+  // can treat them as scene breaks. Navigations in trimmed gaps are
+  // dropped (srcToOut returns null).
+  const navOutTimes = events
+    .filter((e) => e.kind === "navigation")
+    .map((e) => srcToOut(e.t_ms, segments, profile.playback.rate))
+    .filter((t): t is number => t !== null);
+  const keyframes = applyConnectedPan(rawKeyframes, profile, navOutTimes);
   return {
     schema_version: 1,
     recording_id,

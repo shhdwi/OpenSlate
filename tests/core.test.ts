@@ -389,6 +389,27 @@ describe("edit-plan: action-type keyframes + connected-pan", () => {
     expect(kfPan.length).toBeLessThan(kfRaw.length);
   });
 
+  it("connected-pan does NOT collapse across a navigation event (new page = new scene)", () => {
+    // Two clicks with focals close enough that spatial trigger would
+    // fire — but a navigation event between them blocks the collapse.
+    const events: RecordedEvent[] = [
+      { kind: "click", t_ms: 2000, x: 800, y: 400, step_index: 0 },
+      { kind: "navigation", t_ms: 3500, target: "https://x.com/results" },
+      { kind: "click", t_ms: 5000, x: 820, y: 410, step_index: 1 },
+    ];
+    const segs = computeSegments(events, 8000, profile);
+    const kfRaw = computeKeyframes(events, segs, profile, viewport);
+    // Map nav to output time
+    const navOut = srcToOut(3500, segs, profile.playback.rate);
+    expect(navOut).not.toBeNull();
+    const kfWithNav = applyConnectedPan(kfRaw, profile, navOut == null ? [] : [navOut]);
+    const kfWithoutNav = applyConnectedPan(kfRaw, profile, []);
+    // Without nav barrier: spatial trigger collapses (focals only ~22px apart).
+    // With nav barrier: no collapse — keyframe count stays at raw.
+    expect(kfWithoutNav.length).toBeLessThan(kfRaw.length);
+    expect(kfWithNav.length).toBe(kfRaw.length);
+  });
+
   it("connected-pan does NOT collapse when focals are far AND time gap large", () => {
     // Disable the time trigger by setting connected_gap_ms to 0. Then
     // verify the spatial trigger correctly REJECTS far-apart focals.
