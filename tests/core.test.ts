@@ -1046,10 +1046,18 @@ describe("highlight action: smart zoom-to-fit + envelope", () => {
     expect(z).toBeCloseTo(2.0, 3);
   });
 
-  it("returns 1.0 (no zoom) for elements bigger than the fillFraction window", () => {
-    // An element that already fills more than 70% of the viewport doesn't
-    // need a zoom.
+  it("floors at 1.5× even for elements bigger than the fillFraction window", () => {
+    // An element that already fills more than 70% of the viewport would
+    // mathematically need NO zoom, but the floor ensures the highlight
+    // ALWAYS feels like a camera action — full-width elements get edges
+    // cropped slightly. Calibrated floor 1.5×.
     const z = computeHighlightZoom({ w: 1200, h: 760 }, viewport, 2.0);
+    expect(z).toBe(1.5);
+  });
+
+  it("respects an explicit lower floor when passed", () => {
+    // Power-user override: pass floor=1.0 to disable the 1.5× minimum.
+    const z = computeHighlightZoom({ w: 1200, h: 760 }, viewport, 2.0, 0.7, 1.0);
     expect(z).toBe(1);
   });
 

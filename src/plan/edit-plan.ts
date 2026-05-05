@@ -127,9 +127,16 @@ const SALIENT_KINDS = new Set(["click", "type", "scroll", "hover", "highlight"])
  * highlighted bbox fills `fillFraction` of the viewport's smaller axis.
  * Small elements (e.g. a chart icon) zoom further; large elements (a
  * dashboard panel) zoom less, so all highlighted regions read at a
- * comparable visual size. Capped at the template's peak (acts as a
- * ceiling) so even tiny elements don't zoom past the calibrated
- * restraint cap.
+ * comparable visual size. Capped at the template's peak (ceiling) so
+ * even tiny elements don't zoom past the calibrated restraint cap.
+ *
+ * Floor: every highlight gets at least `floor` zoom, even when the
+ * element is already wider than fillFraction of the viewport. The
+ * camera should ALWAYS feel like a zoom for highlight actions —
+ * full-width elements get edges cropped slightly so the highlight
+ * still reads as "the camera is doing something on this region."
+ * Floor calibrated to 1.5× — visible camera action without cropping
+ * meaningful content.
  *
  * `fillFraction = 0.7` → bbox occupies 70% of the smaller axis after
  * zoom. Below 0.5 the highlight feels lost in dead space; above 0.8 it
@@ -140,15 +147,17 @@ export function computeHighlightZoom(
   viewport: { width: number; height: number },
   ceiling: number,
   fillFraction = 0.7,
+  floor = 1.5,
 ): number {
-  if (bbox.w <= 0 || bbox.h <= 0) return Math.min(ceiling, 1.6);
+  if (bbox.w <= 0 || bbox.h <= 0) return Math.min(ceiling, Math.max(floor, 1.6));
   // We want bbox.w * zoom ≤ vp.width * fillFraction (so it fits horizontally)
   // AND bbox.h * zoom ≤ vp.height * fillFraction (so it fits vertically).
   const zoomX = (viewport.width * fillFraction) / bbox.w;
   const zoomY = (viewport.height * fillFraction) / bbox.h;
   const ideal = Math.min(zoomX, zoomY);
-  // Floor at 1.0 (no de-zoom for big elements — just hold wide).
-  return Math.max(1.0, Math.min(ceiling, ideal));
+  // Clamp to [floor, ceiling]. floor=1.5 ensures highlight always feels
+  // like a camera action, even on already-wide elements.
+  return Math.max(floor, Math.min(ceiling, ideal));
 }
 
 /**

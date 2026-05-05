@@ -140,11 +140,26 @@ export const Cursor: React.FC<CursorRenderProps> = ({
   const aspect = spriteInfo.width / spriteInfo.height;
 
   // Default 28px is the cursor's LONGER side at size_multiplier=1; default
-  // profile is 2.5x → 70px. The longer side stays consistent across sprite
-  // kinds (so the I-beam and the arrow visually scale comparably) while
-  // the shorter side follows aspect ratio.
+  // profile is 2.5x → 70px before per-kind scaling.
+  //
+  // Per-kind compensation: the macOS-style arrow/pointer/grab/not-allowed
+  // sprites occupy a roughly-square bbox; the I-beam is a tall narrow
+  // strip. At the same `longerSide`, the I-beam reads as MORE prominent
+  // visually because it's a high-contrast vertical bar, while the arrow
+  // distributes its visual mass across a 2D shape and reads smaller.
+  // Scaling the 2D-shape kinds by 2× brings them to comparable visual
+  // prominence with the I-beam at default `size_multiplier`. User can
+  // still scale globally via cursor.size_multiplier — this is a per-
+  // kind ratio, not an absolute size.
+  const PER_KIND_SCALE: Record<typeof kind, number> = {
+    arrow: 2.0,
+    pointer: 2.0,
+    grab: 2.0,
+    "not-allowed": 2.0,
+    text: 1.0,
+  };
   const baseSize = 28;
-  const longerSide = baseSize * profile.size_multiplier;
+  const longerSide = baseSize * profile.size_multiplier * (PER_KIND_SCALE[kind] ?? 1);
   const renderedWidth = aspect >= 1 ? longerSide : longerSide * aspect;
   const renderedHeight = aspect >= 1 ? longerSide / aspect : longerSide;
 
