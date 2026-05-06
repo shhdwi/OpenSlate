@@ -166,6 +166,10 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     frames_url_prefix,
     profile: opts.profile,
     edit_plan,
+    // Forward the export preset's transparency flag to the composition
+    // so it can skip the bg layer. Pairs with the alpha codec selected
+    // below (vp9+yuva420p for webm, prores4444 for mov).
+    transparent_bg: opts.preset.transparent_bg === true,
   };
 
   const compositionId = "polish";
@@ -205,13 +209,55 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     ? opts.output_path.replace(/\.gif$/i, ".__gif_intermediate.mp4")
     : opts.output_path;
 
+  // Codec selection — alpha-capable codecs are required when
+  // `transparent_bg: true`. Schema rejects mp4+transparent at parse time,
+  // so by the time we get here, transparent_bg implies webm or mov.
+  //
+  // Encoding choices:
+  //   - webm (opaque OR transparent) → VP8 (libvpx). VP8 has working
+  //     yuva420p alpha support in libvpx + the WebM muxer; libvpx-vp9
+  //     in current ffmpeg silently strips alpha (writes Profile 0
+  //     yuv420p regardless of the pixel-format flag), so VP9 is not a
+  //     viable transparent target. VP8 alpha WebM plays natively in
+  //     Chrome / Firefox / Safari.
+  //   - mov + transparent → ProRes 4444 (codec id "prores"). Playback in
+  //     editors (Premiere, Final Cut, AE) and macOS QuickTime; much
+  //     larger files but pristine alpha.
+  //   - mp4 / h264 — opaque only.
+  //   - gif — opaque only (we render through mp4 first, not affected).
+  type CodecChoice = "h264" | "vp8" | "prores";
+  let codec: CodecChoice = "h264";
+  let pixelFormat: "yuv420p" | "yuva420p" | undefined;
+  if (isGif) {
+    codec = "h264";
+  } else if (opts.preset.format === "webm") {
+    codec = "vp8";
+    if (opts.preset.transparent_bg) {
+      pixelFormat = "yuva420p";
+    }
+  } else if (opts.preset.format === "mov") {
+    // mov implies ProRes 4444 here; transparent_bg=true gets actual
+    // alpha encoded. transparent_bg=false still uses ProRes (no opaque-
+    // mov use case in openSlate).
+    codec = "prores";
+  } else {
+    codec = "h264";
+  }
+
+  // Image format for the per-frame composition output. JPEG is faster
+  // and smaller for opaque renders. PNG is REQUIRED when emitting alpha
+  // (Remotion validates the combo) — JPEG has no alpha channel.
+  const transparentRender = opts.preset.transparent_bg === true;
+  const imageFormat = transparentRender ? "png" : "jpeg";
+
   await renderMedia({
     composition,
     serveUrl: bundleLocation,
-    codec: isGif ? "h264" : opts.preset.format === "webm" ? "vp8" : "h264",
+    codec,
+    ...(pixelFormat ? { pixelFormat } : {}),
     outputLocation: renderPath,
     inputProps,
-    imageFormat: "jpeg",
+    imageFormat,
     jpegQuality: 92,
     crf: 18,
     // Recording frames live at file:// paths; Chromium's default policy

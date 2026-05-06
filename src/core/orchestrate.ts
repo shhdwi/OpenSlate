@@ -225,7 +225,14 @@ export async function orchestrateExport(
   const presetName = args.preset ?? "default";
   const preset = profile.exports[presetName];
 
-  const ext = preset.format === "gif" ? "gif" : preset.format === "webm" ? "webm" : "mp4";
+  const ext =
+    preset.format === "gif"
+      ? "gif"
+      : preset.format === "webm"
+        ? "webm"
+        : preset.format === "mov"
+          ? "mov"
+          : "mp4";
   const slug = kebab(manifest.id) || "demo";
   const output_path =
     args.output_path ??

@@ -174,6 +174,20 @@ const backgroundSchema = z.object({
   parallax_factor: z.number().min(0).max(0.2),
 });
 
+const tiltSchema = z
+  .object({
+    rotate_x_deg: z.number().min(-45).max(45),
+    rotate_y_deg: z.number().min(-45).max(45),
+    rotate_z_deg: z.number().min(-45).max(45),
+    perspective_px: z.number().min(400).max(4000),
+  })
+  .default({
+    rotate_x_deg: 0,
+    rotate_y_deg: 0,
+    rotate_z_deg: 0,
+    perspective_px: 1500,
+  });
+
 const layoutSchema = z.object({
   padding_px: z.number().min(0).max(256),
   frame_radius_px: z.number().min(0).max(48),
@@ -183,6 +197,7 @@ const layoutSchema = z.object({
     color: z.string(),
     offset_y_px: z.number().min(-32).max(32),
   }),
+  tilt: tiltSchema,
 });
 
 const introSchema = z.object({ duration_ms: z.number().min(0).max(2000) });
@@ -258,15 +273,32 @@ const brandSchema = z.object({
   logo: z.string().optional(),
 });
 
-const exportPresetSchema = z.object({
-  format: z.enum(["mp4", "gif", "webm"]),
-  dimensions: z.tuple([z.number().int().min(64).max(7680), z.number().int().min(64).max(4320)]),
-  bitrate_kbps: z.number().int().optional(),
-  loop: z.boolean().optional(),
-  fps: z.number().int().min(8).max(120).optional(),
-  duration_max_s: z.number().min(1).max(180).optional(),
-  capture_target_override: captureTargetSchema.optional(),
-});
+const exportPresetSchema = z
+  .object({
+    format: z.enum(["mp4", "gif", "webm", "mov"]),
+    dimensions: z.tuple([z.number().int().min(64).max(7680), z.number().int().min(64).max(4320)]),
+    bitrate_kbps: z.number().int().optional(),
+    loop: z.boolean().optional(),
+    fps: z.number().int().min(8).max(120).optional(),
+    duration_max_s: z.number().min(1).max(180).optional(),
+    capture_target_override: captureTargetSchema.optional(),
+    transparent_bg: z.boolean().optional(),
+  })
+  // transparent_bg requires an alpha-capable codec. mp4/h264 has no alpha
+  // channel; gif's 1-bit alpha produces fringes around antialiased edges
+  // (text, the framed screen's rounded corners). Only webm (VP9 + yuva420p)
+  // and mov (ProRes 4444) carry clean alpha.
+  .refine(
+    (p) =>
+      !p.transparent_bg ||
+      p.format === "webm" ||
+      p.format === "mov",
+    {
+      message:
+        "transparent_bg=true requires format='webm' (VP9+alpha) or format='mov' (ProRes 4444). mp4/h264 does not support alpha.",
+      path: ["transparent_bg"],
+    },
+  );
 
 const exportsSchema = z.object({
   default: exportPresetSchema,

@@ -209,6 +209,18 @@ export const DEFAULT_POLISH_PROFILE: PolishProfile = {
     padding_px: 80, // principle 10: generosity
     frame_radius_px: 12,
     shadow: { px: 32, opacity: 0.22, color: "auto", offset_y_px: 8 },
+    // 3D tilt off by default — flat screen is the calmest read and
+    // matches what most demo videos look like. Opt in via the named
+    // presets in TILT_PRESETS (`tilt_left`, `tilt_right`, `billboard`,
+    // `dashboard`, `kiosk`) for product-shot feel, or set the angles
+    // directly. perspective_px=1500 here is the default-when-zero value;
+    // it has no effect on rendering when all angles are 0.
+    tilt: {
+      rotate_x_deg: 0,
+      rotate_y_deg: 0,
+      rotate_z_deg: 0,
+      perspective_px: 1500,
+    },
   },
 
   intro: { duration_ms: 0 }, // respect viewer's scroll thumb

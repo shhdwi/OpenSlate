@@ -5,6 +5,7 @@
 
 export {
   defineProfile,
+  TILT_PRESETS,
   type PolishProfile,
   type DefineProfileResult,
   type BrandKit,
@@ -17,6 +18,7 @@ export {
   type FrameProfile,
   type BackgroundProfile,
   type LayoutProfile,
+  type TiltProfile,
   type IntroProfile,
   type OutroProfile,
   type PacingProfile,

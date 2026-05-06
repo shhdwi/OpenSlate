@@ -56,6 +56,14 @@ export interface CompositionProps {
   profile: PolishProfile;
   /** Camera plan + segment trim, produced by buildEditPlan (src/plan/edit-plan.ts) */
   edit_plan: EditPlan;
+  /**
+   * Render the framed (and possibly tilted) screen on TRANSPARENT —
+   * skip the gradient/wallpaper bg layer entirely. Set by the renderer
+   * from `ExportPreset.transparent_bg`. The render pipeline pairs this
+   * with an alpha-capable codec (VP9/yuva420p for webm, ProRes 4444 for
+   * mov) so the output carries actual alpha, ready to composite.
+   */
+  transparent_bg?: boolean;
 }
 
 export const PolishComposition: React.FC<CompositionProps> = ({
@@ -65,6 +73,7 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   frames_url_prefix,
   profile,
   edit_plan,
+  transparent_bg,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -249,16 +258,58 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   void width;
   void height;
 
+  // 3D tilt: when any axis is non-zero, wrap the Frame in a perspective
+  // container + rotation. Identity (all zeros) skips the wrapper entirely
+  // so the default flat path has no extra DOM and no perspective overhead.
+  const tilt = profile.layout.tilt;
+  const tiltActive =
+    tilt.rotate_x_deg !== 0 ||
+    tilt.rotate_y_deg !== 0 ||
+    tilt.rotate_z_deg !== 0;
+  const tiltWrapStyle: React.CSSProperties = tiltActive
+    ? {
+        position: "absolute",
+        inset: 0,
+        perspective: `${tilt.perspective_px}px`,
+        // perspective-origin centered: the vanishing point is at the
+        // viewport center, which makes the tilt feel like the screen is
+        // being viewed from straight-on but turned. Off-center origins
+        // (e.g. perspective-origin: 0% 50%) produce dramatic-but-uneasy
+        // shots; we don't expose that for now.
+        perspectiveOrigin: "50% 50%",
+      }
+    : { position: "absolute", inset: 0 };
+  const tiltInnerStyle: React.CSSProperties = tiltActive
+    ? {
+        position: "absolute",
+        inset: 0,
+        transform: `rotateX(${tilt.rotate_x_deg}deg) rotateY(${tilt.rotate_y_deg}deg) rotateZ(${tilt.rotate_z_deg}deg)`,
+        transformStyle: "preserve-3d",
+        // willChange hints to the compositor; matters only at runtime, not
+        // during Remotion's deterministic render. Cheap to leave on.
+        willChange: "transform",
+      }
+    : { position: "absolute", inset: 0 };
+
   return (
     <AbsoluteFill>
-      <Background
-        profile={profile.background}
-        brand={profile.brand}
-        parallax_x={bgParallaxX}
-        parallax_y={bgParallaxY}
-      />
+      {/* Skip the background layer when exporting transparent — the
+          composition renders to alpha and the consumer composites their
+          own background. The Frame's own drop-shadow still renders, so
+          the output carries a tasteful shadow against the transparent
+          backdrop (useful for stacking on a colored landing page). */}
+      {!transparent_bg && (
+        <Background
+          profile={profile.background}
+          brand={profile.brand}
+          parallax_x={bgParallaxX}
+          parallax_y={bgParallaxY}
+        />
+      )}
 
-      <Frame profile={profile.frame} layout={profile.layout} brand={profile.brand}>
+      <div style={tiltWrapStyle}>
+        <div style={tiltInnerStyle}>
+          <Frame profile={profile.frame} layout={profile.layout} brand={profile.brand}>
         <div
           style={{
             position: "absolute",
@@ -328,6 +379,8 @@ export const PolishComposition: React.FC<CompositionProps> = ({
           </Stage>
         </div>
       </Frame>
+        </div>
+      </div>
 
       {profile.captions.mode !== "off" && (
         <Captions profile={profile.captions} events={visibleEvents} t_ms={out_t_ms} />

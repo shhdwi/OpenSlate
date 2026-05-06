@@ -266,7 +266,105 @@ export interface LayoutProfile {
   frame_radius_px: number;
   /** principle: mass_and_weight, exaggeration — visible shadow grounds frame */
   shadow: LayoutShadow;
+  /**
+   * 3D tilt of the framed screen. Defaults to all-zeros (flat — current
+   * behavior, no perspective transform applied at all). Non-zero values
+   * wrap the Frame in a `perspective(P) rotateX(rx) rotateY(ry)
+   * rotateZ(rz)` container, lifting the screen off the page in 3D space.
+   *
+   * Use `TILT_PRESETS.<name>` for friendly defaults (`tilt_left`,
+   * `tilt_right`, `billboard`, `dashboard`), or set the angles directly
+   * for custom tilt. The presets ARE just curated angle values — there's
+   * no separate "preset" runtime field.
+   */
+  tilt: TiltProfile;
 }
+
+export interface TiltProfile {
+  /**
+   * Rotation around X (horizontal) axis in degrees. Positive = top tips
+   * AWAY from viewer (screen looks down); negative = top tips TOWARD
+   * viewer (screen looks up). Range -45..45.
+   */
+  rotate_x_deg: number;
+  /**
+   * Rotation around Y (vertical) axis in degrees. Positive = right side
+   * tips AWAY (screen turns left); negative = right side tips TOWARD
+   * viewer (screen turns right). Range -45..45.
+   */
+  rotate_y_deg: number;
+  /**
+   * Rotation around Z (axis pointing at viewer). Standard 2D rotation.
+   * Range -45..45.
+   */
+  rotate_z_deg: number;
+  /**
+   * Perspective distance in px. Smaller = more dramatic foreshortening
+   * (the close edge looks larger relative to the far edge); larger =
+   * subtler. Common range 800–2400. Default 1500 reads as a slight
+   * "product shot" depth without warping the recording.
+   */
+  perspective_px: number;
+}
+
+/**
+ * Curated tilt presets. Reference these from polish.config.ts when you
+ * want a quick "rotate the screen left" / "billboard angle" feel without
+ * dialing the angles yourself:
+ *
+ *   tilt: TILT_PRESETS.tilt_left,
+ *   // or override one field:
+ *   tilt: { ...TILT_PRESETS.billboard, rotate_y_deg: -10 },
+ *
+ * The presets are deliberately shallow (≤15° on any axis) — anything
+ * stronger starts cropping the framed recording at the edges and reads
+ * as a graphic, not a screen.
+ */
+export const TILT_PRESETS: Record<
+  "none" | "tilt_left" | "tilt_right" | "billboard" | "dashboard" | "kiosk",
+  TiltProfile
+> = {
+  // Flat — current behavior, identity transform (no perspective wrapper).
+  none: { rotate_x_deg: 0, rotate_y_deg: 0, rotate_z_deg: 0, perspective_px: 1500 },
+  // Subtle "product shot" with screen turned slightly to the right of
+  // the viewer (its left side is closer). Common landing-page angle.
+  tilt_left: {
+    rotate_x_deg: -2,
+    rotate_y_deg: 12,
+    rotate_z_deg: 0,
+    perspective_px: 1500,
+  },
+  // Mirror of tilt_left — screen turned slightly to the left of viewer.
+  tilt_right: {
+    rotate_x_deg: -2,
+    rotate_y_deg: -12,
+    rotate_z_deg: 0,
+    perspective_px: 1500,
+  },
+  // Stronger "displayed on a stand" angle — screen tipped away with a
+  // pronounced left-turn. Reads as "this is a product showcase".
+  billboard: {
+    rotate_x_deg: 10,
+    rotate_y_deg: -15,
+    rotate_z_deg: 0,
+    perspective_px: 1200,
+  },
+  // Slight downward tip — like looking down at a desk monitor.
+  dashboard: {
+    rotate_x_deg: -4,
+    rotate_y_deg: 0,
+    rotate_z_deg: 0,
+    perspective_px: 2000,
+  },
+  // Tipped UP toward the viewer — screen looks "up" at you. Useful for
+  // hero shots where the viewer is positioned above the device.
+  kiosk: {
+    rotate_x_deg: 8,
+    rotate_y_deg: 0,
+    rotate_z_deg: 0,
+    perspective_px: 1800,
+  },
+};
 
 // ─── Intro / Outro ───────────────────────────────────────────────────────────
 
@@ -398,7 +496,7 @@ export interface BrandKit {
 
 // ─── Export presets ──────────────────────────────────────────────────────────
 
-export type ExportFormat = "mp4" | "gif" | "webm";
+export type ExportFormat = "mp4" | "gif" | "webm" | "mov";
 
 export interface ExportPreset {
   format: ExportFormat;
@@ -408,6 +506,25 @@ export interface ExportPreset {
   fps?: number;
   duration_max_s?: number;
   capture_target_override?: CaptureTarget;
+  /**
+   * Render with a transparent background — skips the gradient/wallpaper
+   * bg layer in the composition AND uses an alpha-supporting codec so
+   * the framed (and possibly tilted) screen sits on transparent, ready
+   * to be composited over a website / slide / video editor.
+   *
+   * Format constraint: only `webm` (VP9 + yuva420p) and `mov` (ProRes
+   * 4444) carry alpha. `mp4`/`h264` does NOT support alpha — setting
+   * `transparent_bg: true` with `format: "mp4"` is rejected at parse
+   * time. `gif` could in principle (1-bit alpha) but the result is
+   * fringy; we don't allow it.
+   *
+   *   Use `webm` for web/Twitter/landing-pages (smaller, broader
+   *   support).
+   *   Use `mov` (ProRes 4444) for editor pipelines (Final Cut, Premiere)
+   *   where you'll re-encode anyway — much larger files but pristine
+   *   alpha.
+   */
+  transparent_bg?: boolean;
 }
 
 export interface ExportsProfile {

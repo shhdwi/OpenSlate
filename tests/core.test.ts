@@ -1317,6 +1317,125 @@ describe("highlight lift animates THROUGH envelope (not binary)", () => {
   });
 });
 
+describe("layout.tilt — 3D screen tilt", () => {
+  it("default profile is flat (all rotation zero)", () => {
+    const t = DEFAULT_POLISH_PROFILE.layout.tilt;
+    expect(t.rotate_x_deg).toBe(0);
+    expect(t.rotate_y_deg).toBe(0);
+    expect(t.rotate_z_deg).toBe(0);
+    // perspective_px has a value but is unused while all rotations are 0.
+    expect(t.perspective_px).toBeGreaterThan(0);
+  });
+
+  it("schema accepts custom angles within range", async () => {
+    const { TILT_PRESETS } = await import("../src/core/types.js");
+    // valid custom values
+    for (const preset of Object.values(TILT_PRESETS)) {
+      const profile = parsePolishProfile({
+        ...DEFAULT_POLISH_PROFILE,
+        layout: { ...DEFAULT_POLISH_PROFILE.layout, tilt: preset },
+      });
+      expect(profile.layout.tilt).toEqual(preset);
+    }
+  });
+
+  it("schema rejects out-of-range angles (cartoony tilt — would crop the screen)", () => {
+    const bad = {
+      ...DEFAULT_POLISH_PROFILE,
+      layout: {
+        ...DEFAULT_POLISH_PROFILE.layout,
+        tilt: { rotate_x_deg: 60, rotate_y_deg: 0, rotate_z_deg: 0, perspective_px: 1500 },
+      },
+    };
+    expect(() => parsePolishProfile(bad)).toThrow();
+  });
+
+  it("TILT_PRESETS expose at least the documented presets", async () => {
+    const { TILT_PRESETS } = await import("../src/core/types.js");
+    expect(TILT_PRESETS.none).toBeDefined();
+    expect(TILT_PRESETS.tilt_left).toBeDefined();
+    expect(TILT_PRESETS.tilt_right).toBeDefined();
+    expect(TILT_PRESETS.billboard).toBeDefined();
+    expect(TILT_PRESETS.dashboard).toBeDefined();
+    // none must truly be flat
+    expect(TILT_PRESETS.none.rotate_x_deg).toBe(0);
+    expect(TILT_PRESETS.none.rotate_y_deg).toBe(0);
+    expect(TILT_PRESETS.none.rotate_z_deg).toBe(0);
+    // tilt_left and tilt_right are mirror-images on Y
+    expect(TILT_PRESETS.tilt_left.rotate_y_deg).toBe(
+      -TILT_PRESETS.tilt_right.rotate_y_deg,
+    );
+  });
+});
+
+describe("export preset: transparent_bg + alpha codec compatibility", () => {
+  it("default preset has no transparent_bg flag (current opaque mp4 behavior)", () => {
+    expect(DEFAULT_POLISH_PROFILE.exports.default.transparent_bg).toBeUndefined();
+  });
+
+  it("schema rejects transparent_bg=true with format='mp4' (h264 has no alpha)", () => {
+    const bad = {
+      ...DEFAULT_POLISH_PROFILE,
+      exports: {
+        ...DEFAULT_POLISH_PROFILE.exports,
+        default: {
+          ...DEFAULT_POLISH_PROFILE.exports.default,
+          transparent_bg: true,
+        },
+      },
+    };
+    expect(() => parsePolishProfile(bad)).toThrow(/transparent_bg/);
+  });
+
+  it("schema rejects transparent_bg=true with format='gif' (1-bit alpha fringes)", () => {
+    const bad = {
+      ...DEFAULT_POLISH_PROFILE,
+      exports: {
+        ...DEFAULT_POLISH_PROFILE.exports,
+        readme_hero: {
+          ...DEFAULT_POLISH_PROFILE.exports.readme_hero,
+          transparent_bg: true, // gif preset
+        },
+      },
+    };
+    expect(() => parsePolishProfile(bad)).toThrow(/transparent_bg/);
+  });
+
+  it("schema accepts transparent_bg=true with format='webm' (VP9+yuva420p)", () => {
+    const ok = {
+      ...DEFAULT_POLISH_PROFILE,
+      exports: {
+        ...DEFAULT_POLISH_PROFILE.exports,
+        default: {
+          format: "webm" as const,
+          dimensions: [1920, 1080] as [number, number],
+          transparent_bg: true,
+        },
+      },
+    };
+    const parsed = parsePolishProfile(ok);
+    expect(parsed.exports.default.transparent_bg).toBe(true);
+    expect(parsed.exports.default.format).toBe("webm");
+  });
+
+  it("schema accepts transparent_bg=true with format='mov' (ProRes 4444)", () => {
+    const ok = {
+      ...DEFAULT_POLISH_PROFILE,
+      exports: {
+        ...DEFAULT_POLISH_PROFILE.exports,
+        default: {
+          format: "mov" as const,
+          dimensions: [1920, 1080] as [number, number],
+          transparent_bg: true,
+        },
+      },
+    };
+    const parsed = parsePolishProfile(ok);
+    expect(parsed.exports.default.transparent_bg).toBe(true);
+    expect(parsed.exports.default.format).toBe("mov");
+  });
+});
+
 describe("inspect: preview against example.com (integration)", () => {
   // Network-dependent integration test. Runs against example.com — a
   // tiny stable page with one link ("More information..."). Skip in CI
