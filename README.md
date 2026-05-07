@@ -57,48 +57,50 @@ Every default in `polish.config.ts` traces to one of these:
 
 Each principle has a concrete benchmark test the calibration week runs.
 
-## Try it in 5 minutes
-
-The pre-release ships now and works end-to-end. Three paths:
-
-### 1. Zero-config: record any URL
+## Quickstart
 
 ```bash
 git clone https://github.com/shhdwi/openslate
 cd openslate
 bun install && bun run build
-
-# Record + polish + export any URL — no config, no agent
-bun src/cli/index.ts quick https://nanoindex.nanonets.com/demo \
-  --click "button:has-text('Expand all')"
-```
-
-The result lands in `./demos/quickstart-<id>-<date>.mp4` and auto-opens (macOS). First run downloads Chromium (~150MB, one time); subsequent runs are 60–90s.
-
-### 2. Multi-step demo via JS
-
-For real demos you'll script the steps. See the runnable example at [examples/quickstart/demo.mjs](./examples/quickstart/demo.mjs):
-
-```bash
 bun examples/quickstart/demo.mjs
 ```
 
-That records nanoindex.nanonets.com, expands the entity tree, asks a sample question, exports the result. Six lines per step in the `steps` array — copy the file and adapt for your own site.
+That's it. **2–3 minutes** later: an mp4 in `./demos/` showing the canonical [nanoindex.nanonets.com/demo](https://nanoindex.nanonets.com/demo) flow — pick a benchmark question, send, watch the answer stream in, click a citation, switch to Entities. First run also downloads Chromium (~150MB, one-time).
 
-### 3. Inside Claude Code / Cursor / Codex
+### Adapt it for your site
 
-The MCP path. Drops a config file at your project root and registers six tools with your agent:
+Copy [examples/quickstart/demo.mjs](./examples/quickstart/demo.mjs) and edit the `steps` array. Each step is one of:
+
+| Action | Required | Does |
+|---|---|---|
+| `navigate` | `selector` (URL) | Loads the page |
+| `click` | `selector` | Cursor moves with anticipation, clicks |
+| `type` | `selector`, `value` | Clicks to focus, types |
+| `scroll` | `selector` (optional) | Scrolls the matched element |
+| `hover` | `selector` | Cursor hovers |
+| `highlight` | `selector` | Camera spotlights the element |
+| `wait` | — | Holds for `expected_duration_ms` |
+
+Selectors are CSS or `:has-text(...)`. The recorder fail-softs on misses (logs which step missed and continues).
+
+### One-URL one-liner
+
+For an even quicker test against any URL — no scripting, no config:
+
+```bash
+bun src/cli/index.ts quick https://your-app.com --click "button:has-text('Sign up')"
+```
+
+Records, polishes, exports, auto-opens (macOS). The friendliest "first demo" path.
+
+### Inside Claude Code / Cursor / Codex (MCP)
 
 ```bash
 bun src/cli/index.ts init
-# → drops polish.config.ts
-# → registers MCP with Claude Code, Cursor, Codex (whichever are installed)
-# → adds ./demos/ to .gitignore
 ```
 
-Then in your agent: **"demo this feature"**. The agent reads your git diff, drives the recorder, and ships the polish.
-
-For raw CLI usage see [docs](./docs).
+Drops a `polish.config.ts` at your project root and registers six tools with your agent. Then in the agent: **"demo this feature"** — the agent reads your git diff, drives the recorder, ships polished mp4.
 
 ## Architecture
 
