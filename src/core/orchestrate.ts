@@ -5,7 +5,7 @@
 
 import path from "node:path";
 import fs from "node:fs/promises";
-import { renderPolished, type RenderResult } from "../compositor/render.js";
+import { renderPolished, renderPolishedMany, type RenderResult } from "../compositor/render.js";
 import { loadPolishProfile } from "../config/load.js";
 import { buildPlan } from "../plan/generator.js";
 import { buildEditPlan, type EditPlan } from "../plan/edit-plan.js";
@@ -244,6 +244,64 @@ export async function orchestrateExport(
     profile,
     output_path,
     preset,
+  });
+}
+
+export interface ExportManyOrchestratorArgs {
+  recording_id: string;
+  /** Each entry is a preset name + optional output path override. */
+  exports: ReadonlyArray<{
+    preset?: "default" | "readme_hero" | "social_vertical" | "twitter_landscape";
+    output_path?: string;
+  }>;
+  rootDir?: string;
+  profile_overrides?: Partial<PolishProfile>;
+}
+
+/**
+ * Run multiple exports of a recording with a single bundle pass.
+ *
+ * For consumers exporting the same recording in multiple presets (the
+ * typical shipping flow: a default mp4 for the landing page + a
+ * social_vertical mp4 for Twitter + a transparent webm for the press
+ * kit), this avoids paying the ~12s webpack bundling cost for each
+ * export. Returns results in the same order as `exports`.
+ */
+export async function orchestrateExportMany(
+  args: ExportManyOrchestratorArgs,
+): Promise<RenderResult[]> {
+  const baseProfile = await loadPolishProfile(args.rootDir);
+  const profile: PolishProfile = mergePartialProfile(baseProfile, args.profile_overrides);
+  const paths = await ensureProjectDirs(args.rootDir);
+  const dir = recordingDir(paths, args.recording_id);
+  const manifestPath = path.join(dir, "manifest.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as RecordingManifest;
+
+  const slug = kebab(manifest.id) || "demo";
+  const stamp = timestampSlug();
+
+  const exports = args.exports.map((e) => {
+    const presetName = e.preset ?? "default";
+    const preset = profile.exports[presetName];
+    const ext =
+      preset.format === "gif"
+        ? "gif"
+        : preset.format === "webm"
+          ? "webm"
+          : preset.format === "mov"
+            ? "mov"
+            : "mp4";
+    const output_path =
+      e.output_path ??
+      path.join(paths.demos, `${slug}-${presetName}-${stamp}.${ext}`);
+    return { output_path, preset };
+  });
+
+  return renderPolishedMany({
+    manifest,
+    recording_dir: dir,
+    profile,
+    exports,
   });
 }
 

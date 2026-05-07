@@ -60,6 +60,60 @@ program
   });
 
 program
+  .command("quick <url>")
+  .description(
+    "Record + polish + export a tiny demo of any URL. Zero config, no MCP needed — just give it a URL and optionally a selector to click. The result lands in ./demos/.",
+  )
+  .option(
+    "--click <selector>",
+    "CSS selector to click after the page loads (e.g. \"button:has-text('Sign up')\")",
+  )
+  .option("-d, --description <text>", "description of the demo", "Quick demo")
+  .option("--no-open", "don't auto-open the result in your default video player")
+  .action(
+    async (
+      url: string,
+      opts: { click?: string; description: string; open?: boolean },
+    ) => {
+      const startedAt = Date.now();
+      console.log(`▶ recording ${url}`);
+      console.log(`  this takes 1–3 minutes (Chromium download is one-time on first run)`);
+      const steps = [
+        { action: "navigate" as const, selector: url, expected_duration_ms: 1500 },
+        { action: "wait" as const, expected_duration_ms: 800 },
+        ...(opts.click
+          ? [{ action: "click" as const, selector: opts.click, expected_duration_ms: 1200 }]
+          : []),
+        { action: "wait" as const, expected_duration_ms: 600 },
+      ];
+
+      const planResult = await orchestratePlan({
+        description: opts.description,
+        protagonist: "quickstart",
+        base_url: url,
+        kind: "demo",
+        steps,
+      });
+      if (!planResult.is_valid) {
+        console.error("✗ plan invalid:", planResult.violations);
+        process.exit(1);
+      }
+      const exec = await orchestrateExecute({ plan: planResult.plan });
+      console.log(`✓ recorded ${exec.manifest.frame_count} frames`);
+      await orchestratePlanEdit({ recording_id: exec.recording_id });
+      const out = await orchestrateExport({ recording_id: exec.recording_id });
+      const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.log(
+        `✓ ${path.relative(process.cwd(), out.output_path)} · ${(out.size_bytes / 1024 / 1024).toFixed(2)} MB · ${elapsedSec}s`,
+      );
+      if (opts.open !== false && process.platform === "darwin") {
+        const { spawn } = await import("node:child_process");
+        spawn("open", [out.output_path], { detached: true, stdio: "ignore" }).unref();
+      }
+    },
+  );
+
+program
   .command("record")
   .description("Quick smoke recording — useful for testing the pipeline. Records a single page interaction.")
   .requiredOption("-u, --url <url>", "dev server URL")

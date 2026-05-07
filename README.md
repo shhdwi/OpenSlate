@@ -57,29 +57,48 @@ Every default in `polish.config.ts` traces to one of these:
 
 Each principle has a concrete benchmark test the calibration week runs.
 
-## Quick start (when v1 ships)
+## Try it in 5 minutes
+
+The pre-release ships now and works end-to-end. Three paths:
+
+### 1. Zero-config: record any URL
 
 ```bash
-# Install
-npm i -g openslate
-# or use without installing
-npx openslate init
+git clone https://github.com/shhdwi/openslate
+cd openslate
+bun install && bun run build
+
+# Record + polish + export any URL — no config, no agent
+bun src/cli/index.ts quick https://nanoindex.nanonets.com/demo \
+  --click "button:has-text('Expand all')"
 ```
 
+The result lands in `./demos/quickstart-<id>-<date>.mp4` and auto-opens (macOS). First run downloads Chromium (~150MB, one time); subsequent runs are 60–90s.
+
+### 2. Multi-step demo via JS
+
+For real demos you'll script the steps. See the runnable example at [examples/quickstart/demo.mjs](./examples/quickstart/demo.mjs):
+
 ```bash
-# In your project root
-openslate init
-# → adds an MCP entry to ~/.claude/settings.json (and Cursor / Codex)
-# → drops a polish.config.ts you can tweak by asking your agent
+bun examples/quickstart/demo.mjs
+```
+
+That records nanoindex.nanonets.com, expands the entity tree, asks a sample question, exports the result. Six lines per step in the `steps` array — copy the file and adapt for your own site.
+
+### 3. Inside Claude Code / Cursor / Codex
+
+The MCP path. Drops a config file at your project root and registers six tools with your agent:
+
+```bash
+bun src/cli/index.ts init
+# → drops polish.config.ts
+# → registers MCP with Claude Code, Cursor, Codex (whichever are installed)
 # → adds ./demos/ to .gitignore
 ```
 
-```bash
-# Then in Claude Code (or Cursor / Codex):
-You: demo this feature
-```
+Then in your agent: **"demo this feature"**. The agent reads your git diff, drives the recorder, and ships the polish.
 
-That's the install flow. For raw CLI use without an agent, see [docs](./docs).
+For raw CLI usage see [docs](./docs).
 
 ## Architecture
 

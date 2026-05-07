@@ -266,28 +266,74 @@ export const PolishComposition: React.FC<CompositionProps> = ({
     tilt.rotate_x_deg !== 0 ||
     tilt.rotate_y_deg !== 0 ||
     tilt.rotate_z_deg !== 0;
+
+  // Auto-fit: when tilted, perspective foreshortening pushes the near
+  // edge of the screen TOWARD the viewer, which projects to a LARGER
+  // visible size. Without compensation the near edge extends past the
+  // canvas border and crops — the user sees the browser tab cut off on
+  // one side. We pre-multiply by a uniform scale so the projected
+  // bounding box always fits inside the canvas with a small safety
+  // margin. The scale is derived from the actual angles + perspective:
+  //
+  //   for each axis, the near edge moves toward the viewer by
+  //   d ≈ (canvas_dim/2) * sin(angle), and the projected size grows by
+  //   P/(P-d). We invert the worst-case growth and add 5% breathing
+  //   room. This is a deliberate over-correction — the Frame's drop
+  //   shadow also extends past its bounds in 3D space, so a 5% margin
+  //   keeps the shadow visible too.
+  const tiltFitScale = tiltActive
+    ? computeTiltFitScale(tilt, height || 1080)
+    : 1;
   const tiltWrapStyle: React.CSSProperties = tiltActive
     ? {
         position: "absolute",
         inset: 0,
         perspective: `${tilt.perspective_px}px`,
-        // perspective-origin centered: the vanishing point is at the
-        // viewport center, which makes the tilt feel like the screen is
-        // being viewed from straight-on but turned. Off-center origins
-        // (e.g. perspective-origin: 0% 50%) produce dramatic-but-uneasy
-        // shots; we don't expose that for now.
-        perspectiveOrigin: "50% 50%",
+        // Perspective-origin = where the camera (vanishing point) sits
+        // in screen space. Default 50% 50% (center) makes rotations
+        // look like they're viewed straight-on. The `flat` preset moves
+        // this UP (e.g. 15%) so the camera is "above" the canvas
+        // looking down — that's what makes a strong rotateX read as
+        // "lying flat on a table" rather than "edge-on view of a door."
+        perspectiveOrigin: `50% ${tilt.perspective_origin_y_pct ?? 50}%`,
       }
     : { position: "absolute", inset: 0 };
+  // Ground shadow — `filter: drop-shadow` is computed in SCREEN SPACE
+  // after projection (unlike box-shadow which lives in element space and
+  // tilts WITH the element). For strong tilts this is what sells the
+  // "screen sitting on a surface" feel — the shadow lands on the
+  // imaginary floor beneath the rotated screen, not stuck to the back
+  // of it. Magnitude scales with the strength of the tilt; barely-tilted
+  // screens get a barely-visible extra shadow.
+  const tiltMagnitude = Math.max(
+    Math.abs(tilt.rotate_x_deg),
+    Math.abs(tilt.rotate_y_deg),
+  );
+  const groundShadowBlur = Math.round(40 + tiltMagnitude * 1.2);
+  const groundShadowY = Math.round(20 + tiltMagnitude * 0.8);
+  const groundShadowAlpha = Math.min(0.55, 0.25 + tiltMagnitude * 0.005);
   const tiltInnerStyle: React.CSSProperties = tiltActive
     ? {
         position: "absolute",
         inset: 0,
-        transform: `rotateX(${tilt.rotate_x_deg}deg) rotateY(${tilt.rotate_y_deg}deg) rotateZ(${tilt.rotate_z_deg}deg)`,
+        // Transform stack (read right-to-left, applied to element-space):
+        //   1. rotateZ → rotateY → rotateX: 3D orientation
+        //   2. scale: pre-rotate auto-fit so projection stays in canvas
+        //   3. translateY: post-rotate screen-space offset, used by
+        //      "lying on a table" presets to push the tilted screen
+        //      into the lower portion of the canvas (leaves room above
+        //      for the "viewer is standing in front of a table" feel)
+        transform: `translate(0, ${tilt.translate_y_pct ?? 0}%) scale(${tiltFitScale}) rotateX(${tilt.rotate_x_deg}deg) rotateY(${tilt.rotate_y_deg}deg) rotateZ(${tilt.rotate_z_deg}deg)`,
         transformStyle: "preserve-3d",
+        // Screen-space ground shadow. drop-shadow is applied AFTER the
+        // 3D projection, so it stays on the imaginary "floor" — gives
+        // the tilted screen a place to sit. Without this, even the most
+        // physically correct rotation reads as "floating" rather than
+        // "sitting on a surface."
+        filter: `drop-shadow(0 ${groundShadowY}px ${groundShadowBlur}px rgba(0, 0, 0, ${groundShadowAlpha}))`,
         // willChange hints to the compositor; matters only at runtime, not
         // during Remotion's deterministic render. Cheap to leave on.
-        willChange: "transform",
+        willChange: "transform, filter",
       }
     : { position: "absolute", inset: 0 };
 
@@ -444,6 +490,48 @@ function sampleCamera(
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
+}
+
+/**
+ * Compute a uniform pre-rotate scale that ensures the rotated +
+ * perspective-projected element stays within its original bounds — i.e.
+ * the WHOLE browser tab remains visible after the tilt is applied.
+ *
+ * The math: for each rotation axis with angle θ, the near edge moves
+ * toward the viewer by approximately (h/2) * sin(θ), where h is the
+ * canvas dimension. CSS perspective then magnifies that edge by
+ * P / (P - d). We invert the worst-case growth and add a 5% safety
+ * margin so the Frame's drop shadow also stays visible.
+ *
+ * Returns a number in (0, 1]. For `none` (no tilt) the caller skips
+ * this and uses 1 directly; we still handle the all-zeros case here as
+ * a safety net.
+ */
+export function computeTiltFitScale(
+  tilt: { rotate_x_deg: number; rotate_y_deg: number; rotate_z_deg: number; perspective_px: number },
+  canvasH: number,
+): number {
+  const rx = (Math.abs(tilt.rotate_x_deg) * Math.PI) / 180;
+  const ry = (Math.abs(tilt.rotate_y_deg) * Math.PI) / 180;
+  // No perspective foreshortening when there's no tilt — return 1
+  // exactly so the no-tilt path is a true identity.
+  if (rx === 0 && ry === 0) return 1;
+  // rotate_z_deg is a pure 2D rotation around the screen normal — no
+  // perspective foreshortening — so it doesn't contribute to the near-
+  // edge growth. (It can clip corners against the canvas, but the Frame
+  // is much narrower than the canvas, so realistic z-rotations stay
+  // safe.) Z is intentionally ignored here.
+  const halfH = canvasH / 2;
+  const dx = halfH * Math.sin(rx);
+  const dy = halfH * Math.sin(ry);
+  const P = Math.max(1, tilt.perspective_px);
+  const growX = P / Math.max(1, P - dy); // rotateY pushes the L/R edge
+  const growY = P / Math.max(1, P - dx); // rotateX pushes the T/B edge
+  const maxGrow = Math.max(growX, growY);
+  // Hard floor at 0.5 — beyond that the recording is too small to read.
+  // The schema clamps angles at 45° anyway, so we won't hit this in
+  // practice for sane inputs.
+  return Math.max(0.5, Math.min(1, 0.95 / maxGrow));
 }
 
 const OutroFade: React.FC<{ profile: PolishProfile }> = ({ profile }) => {

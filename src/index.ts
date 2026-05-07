@@ -71,6 +71,7 @@ export {
   orchestrateExecute,
   orchestratePlanEdit,
   orchestrateExport,
+  orchestrateExportMany,
 } from "./core/orchestrate.js";
 
 export { loadPolishProfile, configFileExists } from "./config/load.js";

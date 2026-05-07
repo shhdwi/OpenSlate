@@ -1339,32 +1339,62 @@ describe("layout.tilt — 3D screen tilt", () => {
     }
   });
 
-  it("schema rejects out-of-range angles (cartoony tilt — would crop the screen)", () => {
+  it("schema rejects out-of-range angles (above the laying-flat ceiling)", () => {
+    // rotate_x/y range is [-75, 75] — wide enough for `flat` (rx=60°)
+    // but bounded so callers can't make the screen disappear into a
+    // thin line. 80° exceeds that bound.
     const bad = {
       ...DEFAULT_POLISH_PROFILE,
       layout: {
         ...DEFAULT_POLISH_PROFILE.layout,
-        tilt: { rotate_x_deg: 60, rotate_y_deg: 0, rotate_z_deg: 0, perspective_px: 1500 },
+        tilt: { rotate_x_deg: 80, rotate_y_deg: 0, rotate_z_deg: 0, perspective_px: 1500 },
       },
     };
     expect(() => parsePolishProfile(bad)).toThrow();
   });
 
-  it("TILT_PRESETS expose at least the documented presets", async () => {
+  it("TILT_PRESETS expose the four documented presets", async () => {
     const { TILT_PRESETS } = await import("../src/core/types.js");
     expect(TILT_PRESETS.none).toBeDefined();
-    expect(TILT_PRESETS.tilt_left).toBeDefined();
-    expect(TILT_PRESETS.tilt_right).toBeDefined();
-    expect(TILT_PRESETS.billboard).toBeDefined();
-    expect(TILT_PRESETS.dashboard).toBeDefined();
+    expect(TILT_PRESETS.linear).toBeDefined();
+    expect(TILT_PRESETS.angled).toBeDefined();
+    expect(TILT_PRESETS.flat).toBeDefined();
     // none must truly be flat
     expect(TILT_PRESETS.none.rotate_x_deg).toBe(0);
     expect(TILT_PRESETS.none.rotate_y_deg).toBe(0);
     expect(TILT_PRESETS.none.rotate_z_deg).toBe(0);
-    // tilt_left and tilt_right are mirror-images on Y
-    expect(TILT_PRESETS.tilt_left.rotate_y_deg).toBe(
-      -TILT_PRESETS.tilt_right.rotate_y_deg,
-    );
+  });
+
+  it("presets escalate in tilt magnitude: linear < angled < flat", async () => {
+    // Communicates the design intent: linear is the gentlest tilt that
+    // still reads as 3D, flat is the strongest, angled sits between.
+    const { TILT_PRESETS } = await import("../src/core/types.js");
+    const magnitude = (p: { rotate_x_deg: number; rotate_y_deg: number }) =>
+      Math.hypot(p.rotate_x_deg, p.rotate_y_deg);
+    expect(magnitude(TILT_PRESETS.linear)).toBeLessThan(magnitude(TILT_PRESETS.angled));
+    expect(magnitude(TILT_PRESETS.angled)).toBeLessThan(magnitude(TILT_PRESETS.flat));
+  });
+
+  it("computeTiltFitScale shrinks more as tilt grows so the rotated screen stays in-canvas", async () => {
+    // Without auto-fit, the perspective-projected near edge extends past
+    // the canvas bounds and crops the browser tab. The scale must be
+    // monotonically decreasing as tilt magnitude grows.
+    const { computeTiltFitScale } = await import("../src/compositor/composition.js");
+    const { TILT_PRESETS } = await import("../src/core/types.js");
+    const H = 1080;
+    const sNone = computeTiltFitScale(TILT_PRESETS.none, H);
+    const sLinear = computeTiltFitScale(TILT_PRESETS.linear, H);
+    const sAngled = computeTiltFitScale(TILT_PRESETS.angled, H);
+    const sFlat = computeTiltFitScale(TILT_PRESETS.flat, H);
+    expect(sNone).toBe(1);
+    expect(sLinear).toBeLessThan(sNone);
+    expect(sAngled).toBeLessThan(sLinear);
+    expect(sFlat).toBeLessThan(sAngled);
+    // All scales stay in (0.5, 1] — well above the readability floor.
+    for (const s of [sLinear, sAngled, sFlat]) {
+      expect(s).toBeGreaterThan(0.5);
+      expect(s).toBeLessThanOrEqual(1);
+    }
   });
 });
 
@@ -1433,6 +1463,41 @@ describe("export preset: transparent_bg + alpha codec compatibility", () => {
     const parsed = parsePolishProfile(ok);
     expect(parsed.exports.default.transparent_bg).toBe(true);
     expect(parsed.exports.default.format).toBe("mov");
+  });
+});
+
+describe("ffmpeg arg injection (VP8 speed flags)", () => {
+  it("injects extra flags right after `-c:v <codec>` so they reach the encoder", async () => {
+    const { injectAfterCodec } = await import("../src/compositor/render.js");
+    const args = [
+      "-r", "60", "-f", "image2", "-i", "frames-%04d.png",
+      "-c:v", "libvpx", "-pix_fmt", "yuva420p",
+      "-y", "out.webm",
+    ];
+    const out = injectAfterCodec(args, "libvpx", ["-cpu-used", "4", "-deadline", "good"]);
+    // flags should appear between `-c:v libvpx` and the next ffmpeg flag
+    const codecIdx = out.indexOf("libvpx");
+    expect(out[codecIdx + 1]).toBe("-cpu-used");
+    expect(out[codecIdx + 2]).toBe("4");
+    expect(out[codecIdx + 3]).toBe("-deadline");
+    expect(out[codecIdx + 4]).toBe("good");
+    // and the existing -pix_fmt flag must still come AFTER our injection
+    expect(out.indexOf("-pix_fmt")).toBeGreaterThan(out.indexOf("good"));
+  });
+
+  it("returns args unchanged when codec marker not found (defensive no-op)", async () => {
+    const { injectAfterCodec } = await import("../src/compositor/render.js");
+    const args = ["-i", "in.png", "-y", "out.png"];
+    expect(injectAfterCodec(args, "libvpx", ["-x", "1"])).toEqual(args);
+  });
+
+  it("only matches `-c:v <codec>` pair, not standalone codec name", async () => {
+    // Defensive: if `libvpx` appears in some other arg (e.g. a file
+    // name), don't inject after it.
+    const { injectAfterCodec } = await import("../src/compositor/render.js");
+    const args = ["-i", "/tmp/libvpx-frames/in.png", "-c:v", "h264", "-y", "out.mp4"];
+    const out = injectAfterCodec(args, "libvpx", ["-x", "1"]);
+    expect(out).toEqual(args);
   });
 });
 

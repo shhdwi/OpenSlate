@@ -1,14 +1,41 @@
 /**
- * Headless Remotion render orchestrator. Bundles the composition entry,
- * resolves the recording's frame sequence + events, and renders to mp4 / gif.
+ * Headless Remotion render orchestrator.
  *
- * Two paths in v1:
- *   - mp4 / webm: bundleAndRender via Remotion's renderMedia
- *   - gif: render frames then ffmpeg post (Remotion's gif support exists but
- *          quality is finicky; v1 uses ffmpeg directly for cleaner results)
+ * Two-tier API:
  *
- * v1 ships with a built-in entry that registers <Composition> for our
- * PolishComposition. Users don't write Remotion entries; openSlate does.
+ *   - renderPolished(opts)
+ *       Single export. Bundles the Remotion entry, renders frames, and
+ *       encodes to mp4 / webm / mov / gif. Optionally accepts a
+ *       pre-built `prepared` package so callers running multiple
+ *       exports can avoid re-bundling.
+ *
+ *   - prepareRender(opts)
+ *       Builds the shared work that all exports of the same recording
+ *       reuse: webpack bundle, edit-plan, events, cursor sprites copy.
+ *       Pass the result into renderPolished({prepared}) for each
+ *       export to skip ~12s of webpack per call.
+ *
+ *   - renderPolishedMany(opts)
+ *       Convenience: prepares once, runs N renderPolished calls
+ *       sequentially. The right surface for "give me default mp4 +
+ *       transparent webm + social_vertical mp4 from this recording"
+ *       workflows.
+ *
+ * Quality defaults — calibrated for the openSlate use case
+ * (text-heavy product demos, viewed on web/mobile/landing pages):
+ *   - imageFormat: "png" always (lossless source frames; no JPEG
+ *     artifacts on UI text).
+ *   - crf: 14 for h264 (visually-lossless+ threshold; was 18).
+ *   - x264Preset: "slow" (better compression at same crf; ~2x encode
+ *     time vs "medium" but ~25% smaller files at identical quality).
+ *   - concurrency: "100%" (use all logical cores for frame render).
+ *
+ * VP8 alpha-webm speed — libvpx VP8 single-pass with default flags is
+ * glacially slow (~30+ min for a 22s recording). We override with
+ *   -cpu-used 4 -deadline good -threads 4
+ * which preserves alpha-correctness while bringing encode time down to
+ * ~3-5 minutes. The compression efficiency cost is small (~5-10% larger
+ * files at the same visual quality) — fair trade for usable wall-clock.
  */
 
 import path from "node:path";
@@ -24,6 +51,9 @@ export interface RenderOptions {
   profile: PolishProfile;
   output_path: string;
   preset: ExportPreset;
+  /** Optional reusable bundle + plan from prepareRender(). When present,
+   * renderPolished skips the bundling phase (~12s saved per call). */
+  prepared?: PreparedRender;
 }
 
 export interface RenderResult {
@@ -33,23 +63,33 @@ export interface RenderResult {
   dimensions: [number, number];
 }
 
-export async function renderPolished(opts: RenderOptions): Promise<RenderResult> {
-  // We dynamically import @remotion/bundler and @remotion/renderer so that
-  // installations that only consume the types (e.g. the SKILL.md surface in
-  // tests) don't pay the heavy Chromium cost on every import.
-  const { bundle } = await import("@remotion/bundler");
-  const { renderMedia, selectComposition } = await import("@remotion/renderer");
+export interface PrepareOptions {
+  manifest: RecordingManifest;
+  recording_dir: string;
+  profile: PolishProfile;
+}
 
-  // Resolve the Remotion entry. The render code can be bundled into
-  // multiple output locations (dist/cli.js, dist/index.js,
-  // dist/compositor/index.js) depending on which entry imported it,
-  // so import.meta.dirname is unreliable. We try a wide candidate list:
-  //   1. Co-located (works when render.ts and remotion-entry.tsx are
-  //      bundled together — i.e., dist/compositor/index.js + dist/compositor/remotion-entry.js)
-  //   2. Sibling compositor/ subdir (cli.js or top-level index.js bundle)
-  //   3. Parent compositor/ (sub-bundle inside compositor/)
-  //   4. Walk up to find the openslate package root then look for compositor/
-  //   5. Dev source paths
+/**
+ * Reusable pre-render package. Cheap to keep around; safe to share
+ * across multiple renderPolished calls for the same recording.
+ */
+export interface PreparedRender {
+  bundleLocation: string;
+  events: RecordedEvent[];
+  cursor_samples: CursorSample[];
+  edit_plan: EditPlan;
+  /** Resolved frames URL prefix relative to bundle root. */
+  frames_url_prefix: string;
+}
+
+/**
+ * Bundle the Remotion entry + load events / edit plan + copy cursor
+ * sprites into the recording dir's publicDir. Returns a package suitable
+ * for passing into one or many renderPolished calls.
+ */
+export async function prepareRender(opts: PrepareOptions): Promise<PreparedRender> {
+  const { bundle } = await import("@remotion/bundler");
+
   const dirname = import.meta.dirname ?? __dirname;
   const entryCandidates: string[] = [
     path.resolve(dirname, "./remotion-entry.js"),
@@ -58,9 +98,7 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     path.resolve(dirname, "./compositor/remotion-entry.cjs"),
     path.resolve(dirname, "../compositor/remotion-entry.js"),
     path.resolve(dirname, "../compositor/remotion-entry.cjs"),
-    // Walk up looking for an openslate install with the bundled entry.
     ...walkUpToOpenSlate(dirname),
-    // Dev source paths.
     path.resolve(dirname, "./remotion-entry.tsx"),
     path.resolve(dirname, "../../dist/compositor/remotion-entry.js"),
     path.resolve(dirname, "../../src/compositor/remotion-entry.tsx"),
@@ -74,7 +112,9 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
   }
   if (!entryPath) {
     throw new Error(
-      `openSlate: Remotion entry not found. Looked in:\n${entryCandidates.map((c) => `  - ${c}`).join("\n")}\nRun \`bun run build\` or invoke from a built install.`,
+      `openSlate: Remotion entry not found. Looked in:\n${entryCandidates
+        .map((c) => `  - ${c}`)
+        .join("\n")}\nRun \`bun run build\` or invoke from a built install.`,
     );
   }
 
@@ -85,12 +125,8 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     path.join(opts.recording_dir, opts.manifest.cursor_file),
   );
 
-  // Copy the cursor sprites into the recording's publicDir under cursors/.
-  // The composition references them via staticFile("cursors/<kind>.svg"),
-  // which resolves through Remotion's bundle origin — same path layout
-  // we use for frames. We resolve the source dir relative to the
-  // Remotion entry path: alongside it we expect a cursor-sprites/ folder
-  // (shipped via tsup's onSuccess copy), or the dev source path.
+  // Cursor sprites: copy into the publicDir so the composition's
+  // staticFile("cursors/<kind>.svg") resolves at the bundle origin.
   const spritesSrcCandidates = [
     path.resolve(path.dirname(entryPath), "./cursor-sprites"),
     path.resolve(path.dirname(entryPath), "../compositor/cursor-sprites"),
@@ -113,19 +149,8 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     }
   }
 
-  // Frames live in opts.recording_dir/frames. We pass the recording dir as
-  // Remotion's publicDir so the bundle serves frames at its own origin —
-  // sidesteps Chromium's file:// scheme restrictions during render.
-  // The composition consumes frames at `<frames_dir>/frame_NNNNNN.png`
-  // (relative to bundle root) — i.e. `frames_url_prefix` is the relative
-  // dir name within the served bundle.
   const frames_url_prefix = opts.manifest.frames_dir;
 
-  // Bundle the Remotion entry. webpackOverride teaches webpack that `.js`
-  // import specifiers may resolve to .tsx/.ts sources — needed when the
-  // entry is the .tsx in src/ (TS-ESM convention requires .js suffixes).
-  // publicDir copies the recording's frames into the bundle's static area
-  // so the renderer can load them via http(s) (or file://) at bundle origin.
   const bundleLocation = await bundle({
     entryPoint: entryPath,
     publicDir: opts.recording_dir,
@@ -142,9 +167,6 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
   });
 
   // ── Edit plan: read from disk if persisted, else build inline ──────────
-  // The plan step writes <recording_dir>/edit-plan.json; if present, render
-  // uses it verbatim (lets the user inspect / edit it before render). If
-  // absent (e.g. tests, ad-hoc render path), build it from events + profile.
   const editPlanFile = path.join(opts.recording_dir, "edit-plan.json");
   let edit_plan: EditPlan;
   if (await fileExists(editPlanFile)) {
@@ -159,25 +181,37 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     await fs.writeFile(editPlanFile, JSON.stringify(edit_plan, null, 2));
   }
 
+  return { bundleLocation, events, cursor_samples, edit_plan, frames_url_prefix };
+}
+
+export async function renderPolished(opts: RenderOptions): Promise<RenderResult> {
+  const { renderMedia, selectComposition } = await import("@remotion/renderer");
+
+  const prepared =
+    opts.prepared ??
+    (await prepareRender({
+      manifest: opts.manifest,
+      recording_dir: opts.recording_dir,
+      profile: opts.profile,
+    }));
+
   const inputProps = {
     manifest: opts.manifest,
-    events,
-    cursor_samples,
-    frames_url_prefix,
+    events: prepared.events,
+    cursor_samples: prepared.cursor_samples,
+    frames_url_prefix: prepared.frames_url_prefix,
     profile: opts.profile,
-    edit_plan,
-    // Forward the export preset's transparency flag to the composition
-    // so it can skip the bg layer. Pairs with the alpha codec selected
-    // below (vp9+yuva420p for webm, prores4444 for mov).
+    edit_plan: prepared.edit_plan,
     transparent_bg: opts.preset.transparent_bg === true,
   };
 
   const compositionId = "polish";
   const [width, height] = opts.preset.dimensions;
   const fps = opts.preset.fps ?? opts.manifest.fps;
-  // Output duration comes from the edit plan: sum of segment durations
-  // divided by playback rate, plus outro if any.
-  const visibleRecordingMs = outputDurationMs(edit_plan.segments, edit_plan.playback_rate);
+  const visibleRecordingMs = outputDurationMs(
+    prepared.edit_plan.segments,
+    prepared.edit_plan.playback_rate,
+  );
   const fullDurationMs = visibleRecordingMs + (opts.profile.outro.duration_ms ?? 0);
   const totalDurationMs =
     opts.preset.duration_max_s != null
@@ -186,12 +220,10 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
   const durationInFrames = Math.ceil((totalDurationMs / 1000) * fps);
 
   const composition = await selectComposition({
-    serveUrl: bundleLocation,
+    serveUrl: prepared.bundleLocation,
     id: compositionId,
     inputProps,
   });
-
-  // Override the composition's reported dimensions with the export preset.
   composition.width = width;
   composition.height = height;
   composition.fps = fps;
@@ -199,32 +231,12 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
 
   await fs.mkdir(path.dirname(opts.output_path), { recursive: true });
 
-  // For GIF output we render to mp4 first (Remotion's gif codec is single-
-  // pass and produces visible palette banding on gradients), then convert
-  // via ffmpeg's two-pass palettegen + paletteuse pipeline. The result is
-  // dramatically cleaner — proper dithering, no diagonal banding on
-  // gradient backgrounds.
   const isGif = opts.preset.format === "gif";
   const renderPath = isGif
     ? opts.output_path.replace(/\.gif$/i, ".__gif_intermediate.mp4")
     : opts.output_path;
 
-  // Codec selection — alpha-capable codecs are required when
-  // `transparent_bg: true`. Schema rejects mp4+transparent at parse time,
-  // so by the time we get here, transparent_bg implies webm or mov.
-  //
-  // Encoding choices:
-  //   - webm (opaque OR transparent) → VP8 (libvpx). VP8 has working
-  //     yuva420p alpha support in libvpx + the WebM muxer; libvpx-vp9
-  //     in current ffmpeg silently strips alpha (writes Profile 0
-  //     yuv420p regardless of the pixel-format flag), so VP9 is not a
-  //     viable transparent target. VP8 alpha WebM plays natively in
-  //     Chrome / Firefox / Safari.
-  //   - mov + transparent → ProRes 4444 (codec id "prores"). Playback in
-  //     editors (Premiere, Final Cut, AE) and macOS QuickTime; much
-  //     larger files but pristine alpha.
-  //   - mp4 / h264 — opaque only.
-  //   - gif — opaque only (we render through mp4 first, not affected).
+  // Codec selection — see file header for context.
   type CodecChoice = "h264" | "vp8" | "prores";
   let codec: CodecChoice = "h264";
   let pixelFormat: "yuv420p" | "yuva420p" | undefined;
@@ -232,38 +244,51 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
     codec = "h264";
   } else if (opts.preset.format === "webm") {
     codec = "vp8";
-    if (opts.preset.transparent_bg) {
-      pixelFormat = "yuva420p";
-    }
+    if (opts.preset.transparent_bg) pixelFormat = "yuva420p";
   } else if (opts.preset.format === "mov") {
-    // mov implies ProRes 4444 here; transparent_bg=true gets actual
-    // alpha encoded. transparent_bg=false still uses ProRes (no opaque-
-    // mov use case in openSlate).
     codec = "prores";
   } else {
     codec = "h264";
   }
 
-  // Image format for the per-frame composition output. JPEG is faster
-  // and smaller for opaque renders. PNG is REQUIRED when emitting alpha
-  // (Remotion validates the combo) — JPEG has no alpha channel.
-  const transparentRender = opts.preset.transparent_bg === true;
-  const imageFormat = transparentRender ? "png" : "jpeg";
+  // Quality: PNG source frames in all paths (lossless input → encoder;
+  // eliminates JPEG artifacts on UI text). Required when transparent.
+  const imageFormat = "png";
+
+  // VP8 speed override: libvpx with default flags takes 30+ minutes
+  // for a 22s recording. -cpu-used 4 -deadline good -threads 4 brings
+  // it down to a few minutes with negligible visible quality cost.
+  // For h264, x264Preset:"slow" gives better compression at the same
+  // crf — slower encode but smaller files at higher visual quality.
+  const ffmpegOverride =
+    codec === "vp8"
+      ? (info: { args: string[] }) => injectAfterCodec(info.args, "libvpx", [
+          "-cpu-used", "4",
+          "-deadline", "good",
+          "-threads", "4",
+        ])
+      : undefined;
 
   await renderMedia({
     composition,
-    serveUrl: bundleLocation,
+    serveUrl: prepared.bundleLocation,
     codec,
     ...(pixelFormat ? { pixelFormat } : {}),
     outputLocation: renderPath,
     inputProps,
     imageFormat,
-    jpegQuality: 92,
-    crf: 18,
-    // Recording frames live at file:// paths; Chromium's default policy
-    // blocks file:// loads from a non-file:// origin (the bundled serve URL).
-    // Disable web security for the render pass only — Remotion launches a
-    // dedicated headless instance, so this scope is safe.
+    // crf 14 for h264 = visually-lossless+. crf 18 (the previous
+    // default) is "visually decent" but gradients band on dark UI.
+    // For VP8 we leave Remotion's default crf (better quality than
+    // we'd dial manually for alpha content).
+    crf: codec === "h264" ? 14 : undefined,
+    // x264 preset "slow" gives ~25% smaller files at identical quality
+    // vs "medium" — worth ~2x encode time on h264 only.
+    x264Preset: codec === "h264" ? "slow" : undefined,
+    // Use all logical cores for the parallel frame render. "auto" is
+    // Remotion's default but doesn't always saturate cores on macOS.
+    concurrency: "100%",
+    ffmpegOverride,
     chromiumOptions: { disableWebSecurity: true },
   });
 
@@ -285,16 +310,64 @@ export async function renderPolished(opts: RenderOptions): Promise<RenderResult>
   };
 }
 
+export interface RenderManyOptions {
+  manifest: RecordingManifest;
+  recording_dir: string;
+  profile: PolishProfile;
+  exports: ReadonlyArray<{ output_path: string; preset: ExportPreset }>;
+}
+
+/**
+ * Run multiple exports of the same recording with a single bundle pass.
+ * Each export gets its own preset (codec, dimensions, transparency,
+ * etc.), but they all share the webpack bundle, edit plan, and cursor
+ * sprite copy. For 4 exports this saves ~36s of bundling time.
+ */
+export async function renderPolishedMany(
+  opts: RenderManyOptions,
+): Promise<RenderResult[]> {
+  const prepared = await prepareRender({
+    manifest: opts.manifest,
+    recording_dir: opts.recording_dir,
+    profile: opts.profile,
+  });
+  const results: RenderResult[] = [];
+  for (const e of opts.exports) {
+    results.push(
+      await renderPolished({
+        manifest: opts.manifest,
+        recording_dir: opts.recording_dir,
+        profile: opts.profile,
+        output_path: e.output_path,
+        preset: e.preset,
+        prepared,
+      }),
+    );
+  }
+  return results;
+}
+
+/**
+ * Inject extra ffmpeg flags right after a `-c:v <codec>` pair in the
+ * stitcher arg list, so they apply to the encoder. Returns the
+ * unchanged args if the codec marker isn't found (Remotion shouldn't
+ * change the arg shape, but be defensive).
+ */
+function injectAfterCodec(args: string[], codec: string, extra: string[]): string[] {
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === "-c:v" && args[i + 1] === codec) {
+      return [...args.slice(0, i + 2), ...extra, ...args.slice(i + 2)];
+    }
+  }
+  return args;
+}
+
 /**
  * Two-pass GIF encoding tuned for max quality:
  *  - palettegen with stats_mode=full analyzes every frame
  *  - paletteuse with floyd_steinberg dither (better fidelity than bayer,
  *    minimal file-size penalty in practice)
  *  - lanczos scaling preserves text legibility on downscale
- *
- * For text-heavy demos at 800×480, palette quantization made text
- * illegible. At 1280×720 with floyd_steinberg, gifs read near-mp4
- * quality on dense product UIs.
  */
 async function convertMp4ToGif(
   src: string,
@@ -305,15 +378,7 @@ async function convertMp4ToGif(
   const filtersPaletteGen = `fps=${opts.fps},scale=${opts.width}:${opts.height}:flags=lanczos,palettegen=stats_mode=full`;
   const filtersUse = `fps=${opts.fps},scale=${opts.width}:${opts.height}:flags=lanczos[v];[v][1:v]paletteuse=dither=floyd_steinberg`;
 
-  await runFfmpeg([
-    "-y",
-    "-i",
-    src,
-    "-vf",
-    filtersPaletteGen,
-    palettePath,
-  ]);
-
+  await runFfmpeg(["-y", "-i", src, "-vf", filtersPaletteGen, palettePath]);
   await runFfmpeg([
     "-y",
     "-i",
@@ -326,7 +391,6 @@ async function convertMp4ToGif(
     "0",
     dst,
   ]);
-
   await fs.unlink(palettePath).catch(() => {});
 }
 
@@ -358,7 +422,6 @@ async function fileExists(p: string): Promise<boolean> {
 /**
  * Walk up from `start` looking for `node_modules/openslate/dist/compositor/
  * remotion-entry.{js,cjs}` (the bundled entry shipped with the npm package).
- * Stops at filesystem root or after 8 levels up.
  */
 function walkUpToOpenSlate(start: string): string[] {
   const candidates: string[] = [];
@@ -379,3 +442,6 @@ async function readJson<T>(p: string): Promise<T> {
   const raw = await fs.readFile(p, "utf8");
   return JSON.parse(raw) as T;
 }
+
+// Re-exported for testing.
+export { injectAfterCodec };

@@ -176,10 +176,23 @@ const backgroundSchema = z.object({
 
 const tiltSchema = z
   .object({
-    rotate_x_deg: z.number().min(-45).max(45),
-    rotate_y_deg: z.number().min(-45).max(45),
+    // [-75, 75] range — wide enough to support "screen lying on a
+    // table" angles for the `flat` preset. Above 75° the screen
+    // disappears into a thin line; the auto-fit-scale floor at 0.5
+    // also stops being effective beyond that.
+    rotate_x_deg: z.number().min(-75).max(75),
+    rotate_y_deg: z.number().min(-75).max(75),
     rotate_z_deg: z.number().min(-45).max(45),
     perspective_px: z.number().min(400).max(4000),
+    // Optional vertical offset (% of canvas height). Used by strong
+    // tilts to position the screen LOWER in the canvas, leaving room
+    // above — the "table in front of viewer" framing.
+    translate_y_pct: z.number().min(-50).max(50).optional(),
+    // Optional vertical position of the perspective vanishing point
+    // (% of canvas height). 0=top, 50=center (default), 100=bottom.
+    // Used by `flat` to put the camera UP HIGH so rotateX reads as
+    // "lying down viewed from above" rather than "edge-on view."
+    perspective_origin_y_pct: z.number().min(0).max(100).optional(),
   })
   .default({
     rotate_x_deg: 0,

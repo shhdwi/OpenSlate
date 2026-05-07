@@ -305,64 +305,117 @@ export interface TiltProfile {
    * "product shot" depth without warping the recording.
    */
   perspective_px: number;
+  /**
+   * Vertical offset as % of canvas height. Default 0 (center). Used by
+   * strong-tilt presets like `flat` to push the tilted screen into the
+   * LOWER portion of the canvas, leaving empty space ABOVE — the "table
+   * in front of standing viewer" framing. A centered tilted screen
+   * fills the canvas and reads as floating-in-space; an offset-down one
+   * reads as sitting on a surface in front of you.
+   *
+   * Range -50..50. Positive = down; negative = up.
+   */
+  translate_y_pct?: number;
+  /**
+   * Vertical position of the camera (perspective vanishing point) as
+   * % of canvas height. Default 50 (center). For "looking DOWN AT a
+   * screen lying flat" — the table-on-the-floor metaphor — set this
+   * near the TOP (e.g. 10) so the camera sits above the screen looking
+   * down. Combined with strong rotateX, the rotation now reads as the
+   * element lying back away from a viewer positioned above it.
+   *
+   * Without this, a high rotateX with centered perspective-origin
+   * shows the screen edge-on (like a closing door), not as a horizontal
+   * surface viewed from above.
+   *
+   * Range 0..100. 0 = top of canvas; 100 = bottom.
+   */
+  perspective_origin_y_pct?: number;
 }
 
 /**
- * Curated tilt presets. Reference these from polish.config.ts when you
- * want a quick "rotate the screen left" / "billboard angle" feel without
- * dialing the angles yourself:
+ * Three named tilts (plus `none`):
  *
- *   tilt: TILT_PRESETS.tilt_left,
+ *   linear   — gentle 3D, browser still upright; the lightest tilt
+ *              that still reads as "this is a screen, not a flat
+ *              screenshot." Use as the default opt-in.
+ *   angled   — typical product-shot angle (Apple keynote / Vercel
+ *              hero / Stripe Atlas style). The screen is clearly
+ *              presented at an angle but you can still read every
+ *              UI detail. The middle option.
+ *   flat     — laid back significantly, like a screen lying on a
+ *              desk viewed from above-and-the-side. Strong stylistic
+ *              choice; pairs well with simple, bold content.
+ *
+ * Reference from polish.config.ts:
+ *
+ *   tilt: TILT_PRESETS.linear,
  *   // or override one field:
- *   tilt: { ...TILT_PRESETS.billboard, rotate_y_deg: -10 },
+ *   tilt: { ...TILT_PRESETS.angled, rotate_y_deg: -12 },
  *
- * The presets are deliberately shallow (≤15° on any axis) — anything
- * stronger starts cropping the framed recording at the edges and reads
- * as a graphic, not a screen.
+ * The composition automatically scales the framed content to ensure
+ * the WHOLE browser tab stays visible after the perspective transform —
+ * without auto-fit, the rotated near-edge would extend past the canvas
+ * border and crop. See `computeTiltFitScale` in composition.tsx.
  */
 export const TILT_PRESETS: Record<
-  "none" | "tilt_left" | "tilt_right" | "billboard" | "dashboard" | "kiosk",
+  "none" | "linear" | "angled" | "flat",
   TiltProfile
 > = {
-  // Flat — current behavior, identity transform (no perspective wrapper).
+  // No tilt — identity. No perspective wrapper rendered.
   none: { rotate_x_deg: 0, rotate_y_deg: 0, rotate_z_deg: 0, perspective_px: 1500 },
-  // Subtle "product shot" with screen turned slightly to the right of
-  // the viewer (its left side is closer). Common landing-page angle.
-  tilt_left: {
-    rotate_x_deg: -2,
-    rotate_y_deg: 12,
-    rotate_z_deg: 0,
-    perspective_px: 1500,
-  },
-  // Mirror of tilt_left — screen turned slightly to the left of viewer.
-  tilt_right: {
-    rotate_x_deg: -2,
+
+  // Subtle 3D, browser upright. Mild horizontal pan + barely-there
+  // forward lean + tiny counter-rotate (the -1° Z is what gives it the
+  // "casually placed" feel rather than CAD-perfect alignment).
+  linear: {
+    rotate_x_deg: 2,
     rotate_y_deg: -12,
-    rotate_z_deg: 0,
+    rotate_z_deg: -1,
     perspective_px: 1500,
   },
-  // Stronger "displayed on a stand" angle — screen tipped away with a
-  // pronounced left-turn. Reads as "this is a product showcase".
-  billboard: {
+
+  // Typical product-shot angle — meaningful forward lean + clear
+  // horizontal turn. Tighter perspective (1300) for noticeable
+  // foreshortening. The "Apple keynote / hero shot" middle option.
+  angled: {
     rotate_x_deg: 10,
-    rotate_y_deg: -15,
+    rotate_y_deg: -16,
     rotate_z_deg: 0,
-    perspective_px: 1200,
+    perspective_px: 1300,
   },
-  // Slight downward tip — like looking down at a desk monitor.
-  dashboard: {
-    rotate_x_deg: -4,
-    rotate_y_deg: 0,
+
+  // Lying on a table — viewer standing in front of a desk, looking
+  // DOWN AND FORWARD at a screen lying flat on the surface.
+  //
+  // Five pieces conspire to make this read as "table" rather than
+  // "tilted screen floating in space":
+  //
+  //   1. rotate_x_deg=58 — strong forward tip. The element is mostly
+  //      horizontal but not edge-on; content stays readable.
+  //   2. rotate_y_deg=-6 — small horizontal turn. The bezels read as
+  //      a physical device, not a flat graphic.
+  //   3. perspective_origin_y_pct=5 — CAMERA NEAR TOP of canvas. This
+  //      is the geometry that makes a positive rotateX read as "lying
+  //      back" (viewed from above) rather than "edge-on" (viewed from
+  //      a centered camera).
+  //   4. translate_y_pct=18 — pushes the tilted screen well into the
+  //      LOWER portion of the canvas, leaving empty space above for
+  //      the "background of the room behind the table" feel.
+  //   5. (NOT in this preset, but applied by the composition): a
+  //      screen-space drop-shadow under the rotated element grounds
+  //      it on an imaginary floor. Without #5, no combination of the
+  //      first four reads as "sitting on a surface." See `tiltInnerStyle`
+  //      `filter: drop-shadow(...)` in composition.tsx.
+  //
+  // Auto-fit additionally shrinks the framed content to ~62%.
+  flat: {
+    rotate_x_deg: 58,
+    rotate_y_deg: -6,
     rotate_z_deg: 0,
-    perspective_px: 2000,
-  },
-  // Tipped UP toward the viewer — screen looks "up" at you. Useful for
-  // hero shots where the viewer is positioned above the device.
-  kiosk: {
-    rotate_x_deg: 8,
-    rotate_y_deg: 0,
-    rotate_z_deg: 0,
-    perspective_px: 1800,
+    perspective_px: 1400,
+    translate_y_pct: 18,
+    perspective_origin_y_pct: 5,
   },
 };
 
