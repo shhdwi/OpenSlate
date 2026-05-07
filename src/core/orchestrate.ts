@@ -159,6 +159,14 @@ export interface PlanEditOrchestratorArgs {
    * user can hand-edit it without the next `plan` invocation clobbering.
    */
   force?: boolean;
+  /**
+   * Per-call profile overrides — shallow-merged into the loaded
+   * polish.config.ts. Use this when a specific demo wants different
+   * camera behavior (e.g. disable connected-pan for a "click → wait
+   * → click" flow that should dip to wide between beats) without
+   * modifying the project's polish.config.ts.
+   */
+  profile_overrides?: Partial<PolishProfile>;
 }
 
 export interface PlanEditOrchestratorResult {
@@ -175,7 +183,8 @@ export interface PlanEditOrchestratorResult {
 export async function orchestratePlanEdit(
   args: PlanEditOrchestratorArgs,
 ): Promise<PlanEditOrchestratorResult> {
-  const profile = await loadPolishProfile(args.rootDir);
+  const baseProfile = await loadPolishProfile(args.rootDir);
+  const profile = mergePartialProfile(baseProfile, args.profile_overrides);
   const paths = await ensureProjectDirs(args.rootDir);
   const dir = recordingDir(paths, args.recording_id);
   const manifestPath = path.join(dir, "manifest.json");
@@ -185,7 +194,11 @@ export async function orchestratePlanEdit(
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as RecordingManifest;
   const events = JSON.parse(await fs.readFile(eventsPath, "utf8")) as RecordedEvent[];
 
-  if (!args.force) {
+  // When the caller passes profile_overrides, treat as force=true: the
+  // cached edit-plan was built from a different profile and would
+  // ignore the overrides if we returned it as-is.
+  const shouldRebuild = args.force || args.profile_overrides != null;
+  if (!shouldRebuild) {
     try {
       const existing = JSON.parse(await fs.readFile(planPath, "utf8")) as EditPlan;
       return { recording_id: args.recording_id, edit_plan_path: planPath, edit_plan: existing };
