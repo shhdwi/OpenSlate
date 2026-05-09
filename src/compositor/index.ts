@@ -4,4 +4,14 @@ export {
   type ZoomSuggestion,
   type SuggestZoomsOptions,
 } from "./zoom-suggestions.js";
-export { renderPolished, type RenderOptions, type RenderResult } from "./render.js";
+export {
+  renderPolished,
+  prepareRender,
+  renderPolishedMany,
+  injectAfterCodec,
+  type RenderOptions,
+  type RenderResult,
+  type PrepareOptions,
+  type PreparedRender,
+  type RenderManyOptions,
+} from "./render.js";

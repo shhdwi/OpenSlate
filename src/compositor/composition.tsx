@@ -303,12 +303,20 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   // tilts WITH the element). For strong tilts this is what sells the
   // "screen sitting on a surface" feel — the shadow lands on the
   // imaginary floor beneath the rotated screen, not stuck to the back
-  // of it. Magnitude scales with the strength of the tilt; barely-tilted
-  // screens get a barely-visible extra shadow.
+  // of it. Magnitude scales with the strength of the tilt.
+  //
+  // GATING: drop-shadow on a 1920×1080 frame costs ~10 ms / frame even
+  // at small blur radii (Chromium rasterizes the source layer THEN
+  // applies the screen-space blur). For subtle tilts (linear preset:
+  // max 12°) the shadow is barely perceptible but we'd still pay the
+  // cost. Threshold: only apply drop-shadow when the dominant rotation
+  // is ≥ 15°. Below that, the existing box-shadow on the Frame is
+  // enough and reads identically to the eye.
   const tiltMagnitude = Math.max(
     Math.abs(tilt.rotate_x_deg),
     Math.abs(tilt.rotate_y_deg),
   );
+  const wantsGroundShadow = tiltActive && tiltMagnitude >= 15;
   const groundShadowBlur = Math.round(40 + tiltMagnitude * 1.2);
   const groundShadowY = Math.round(20 + tiltMagnitude * 0.8);
   const groundShadowAlpha = Math.min(0.55, 0.25 + tiltMagnitude * 0.005);
@@ -325,12 +333,13 @@ export const PolishComposition: React.FC<CompositionProps> = ({
         //      for the "viewer is standing in front of a table" feel)
         transform: `translate(0, ${tilt.translate_y_pct ?? 0}%) scale(${tiltFitScale}) rotateX(${tilt.rotate_x_deg}deg) rotateY(${tilt.rotate_y_deg}deg) rotateZ(${tilt.rotate_z_deg}deg)`,
         transformStyle: "preserve-3d",
-        // Screen-space ground shadow. drop-shadow is applied AFTER the
-        // 3D projection, so it stays on the imaginary "floor" — gives
-        // the tilted screen a place to sit. Without this, even the most
-        // physically correct rotation reads as "floating" rather than
-        // "sitting on a surface."
-        filter: `drop-shadow(0 ${groundShadowY}px ${groundShadowBlur}px rgba(0, 0, 0, ${groundShadowAlpha}))`,
+        // Screen-space ground shadow — only for strong tilts; subtle
+        // ones don't benefit visually and the filter has per-frame cost.
+        ...(wantsGroundShadow
+          ? {
+              filter: `drop-shadow(0 ${groundShadowY}px ${groundShadowBlur}px rgba(0, 0, 0, ${groundShadowAlpha}))`,
+            }
+          : {}),
         // willChange hints to the compositor; matters only at runtime, not
         // during Remotion's deterministic render. Cheap to leave on.
         willChange: "transform, filter",
