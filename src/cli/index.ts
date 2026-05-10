@@ -26,6 +26,7 @@ import { startMcpServer } from "../mcp/index.js";
 import { ensureProjectDirs, recordingDir } from "../utils/paths.js";
 import { initProject } from "./init.js";
 import { renderScaffoldTemplate } from "./scaffold-template.js";
+import { splitTypeArg } from "./step-args.js";
 import type { PlanStep, StepAction } from "../plan/types.js";
 
 // Default expected_duration_ms per action — used when the user passes a
@@ -202,24 +203,6 @@ const pushClick = (val: string): true => {
   return true;
 };
 
-// Split on the first `=` outside of `[...]` bracket pairs. Attribute-
-// matcher selectors like textarea[aria-label="Search"] contain a `=`
-// inside the brackets that's part of the selector, not the value
-// separator. A naïve indexOf("=") would slice the selector mid-attribute.
-const splitTypeArg = (val: string): [string, string] | null => {
-  let bracket = 0;
-  for (let i = 0; i < val.length; i++) {
-    const c = val[i];
-    if (c === "[") bracket++;
-    else if (c === "]") bracket--;
-    else if (c === "=" && bracket === 0) {
-      if (i === 0 || i === val.length - 1) return null;
-      return [val.slice(0, i), val.slice(i + 1)];
-    }
-  }
-  return null;
-};
-
 const pushType = (val: string): true => {
   const split = splitTypeArg(val);
   if (!split) {
@@ -300,6 +283,22 @@ program
       }
       const exec = await orchestrateExecute({ plan: planResult.plan });
       console.log(`✓ recorded ${exec.manifest.frame_count} frames`);
+      // Per-step status — silent failures (selector_missed) used to be
+      // invisible until you opened the recording dir. Surface them here so
+      // a malformed selector doesn't quietly produce a no-op video.
+      for (const r of exec.step_results) {
+        const mark = r.status === "fired" ? "✓" : r.status === "selector_missed" ? "✗" : "·";
+        const sel = r.selector ? `  ${r.selector}` : "";
+        console.log(
+          `  ${mark} step ${String(r.step_index).padStart(2)} ${r.action.padEnd(10)} ${r.status}${sel}`,
+        );
+      }
+      const missed = exec.step_results.filter((r) => r.status === "selector_missed");
+      if (missed.length > 0) {
+        console.log(
+          `  → ${missed.length} step(s) missed. Verify selectors with:  npx openslate preview ${url}`,
+        );
+      }
       await orchestratePlanEdit({ recording_id: exec.recording_id });
       const out = await orchestrateExport({ recording_id: exec.recording_id });
       const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);

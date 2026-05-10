@@ -16,6 +16,7 @@ import {
 import { suggestZooms } from "../src/compositor/zoom-suggestions.js";
 import { injectArcWaypoints } from "../src/utils/springs.js";
 import { renderInitTemplate } from "../src/config/init-template.js";
+import { splitTypeArg } from "../src/cli/step-args.js";
 import { dropDuplicateDomClicks, mapCssCursor } from "../src/recorder/playwright.js";
 import type { RecordedEvent } from "../src/recorder/events.js";
 import { SPRITE_INFO } from "../src/compositor/cursor-sprite-info.js";
@@ -1532,4 +1533,42 @@ describe("inspect: preview against example.com (integration)", () => {
     expect(result.url_after_load).toMatch(/example\.com/);
     expect(result.page_title).toBeTruthy();
   }, 30_000);
+});
+
+describe("splitTypeArg — bracket-aware --type parser", () => {
+  it("splits a simple selector=value pair", () => {
+    expect(splitTypeArg("foo=bar")).toEqual(["foo", "bar"]);
+  });
+
+  it("preserves = inside attribute matchers", () => {
+    // The bug that motivated this helper: `textarea[aria-label="Search"]`
+    // contains a `=` inside the brackets. A naïve split on first `=`
+    // sliced the selector mid-attribute and typed the leftover into the
+    // page (https://github.com/shhdwi/openSlate commit 7f2b697).
+    expect(splitTypeArg('textarea[aria-label="Search"]=hello world')).toEqual([
+      'textarea[aria-label="Search"]',
+      "hello world",
+    ]);
+  });
+
+  it("handles multiple bracketed attribute matchers in the selector", () => {
+    expect(splitTypeArg("input[name=email][data-x=y]=alice@example.com")).toEqual([
+      "input[name=email][data-x=y]",
+      "alice@example.com",
+    ]);
+  });
+
+  it("tolerates a value that itself contains =", () => {
+    expect(splitTypeArg("input[name=q]=foo=bar")).toEqual(["input[name=q]", "foo=bar"]);
+  });
+
+  it("returns null when no out-of-bracket = exists", () => {
+    expect(splitTypeArg("just-a-selector")).toBeNull();
+    expect(splitTypeArg("a[x=1]")).toBeNull();
+  });
+
+  it("returns null on empty selector or empty value", () => {
+    expect(splitTypeArg("=value")).toBeNull();
+    expect(splitTypeArg("selector=")).toBeNull();
+  });
 });
