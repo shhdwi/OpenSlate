@@ -60,6 +60,43 @@ program
   });
 
 program
+  .command("record-web")
+  .description(
+    "Open a local browser page that records your screen via getDisplayMedia. Stop the recording and openSlate polishes the video locally — frame chrome, gradient bg, intro/outro, optional 3D tilt. Zero install: nothing leaves your machine.",
+  )
+  .option("--port <n>", "preferred port for the local server (default: random free port)")
+  .action(async (opts: { port?: string }) => {
+    const { startWebRecorderServer } = await import("../recorder/web-server.js");
+    const handle = await startWebRecorderServer({
+      port: opts.port ? Number.parseInt(opts.port, 10) : undefined,
+      onJobDone: ({ output_path, size_bytes }) => {
+        console.log(
+          `✓ ${path.relative(process.cwd(), output_path)} · ${(size_bytes / 1024 / 1024).toFixed(2)} MB`,
+        );
+      },
+      onJobError: ({ recording_id, error }) => {
+        console.error(`✗ ${recording_id}: ${error}`);
+      },
+    });
+    console.log(`▶ recorder UI: ${handle.url}`);
+    console.log(`  opening in your default browser… (Ctrl+C to stop)`);
+    if (process.platform === "darwin") {
+      const { spawn } = await import("node:child_process");
+      spawn("open", [handle.url], { detached: true, stdio: "ignore" }).unref();
+    }
+    // Run until SIGINT — server stays up so the user can record multiple
+    // takes from the same browser tab.
+    await new Promise<void>((resolve) => {
+      const stop = async () => {
+        await handle.close();
+        resolve();
+      };
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+    });
+  });
+
+program
   .command("quick <url>")
   .description(
     "Record + polish + export a tiny demo of any URL. Zero config, no MCP needed — just give it a URL and optionally a selector to click. The result lands in ./demos/.",
