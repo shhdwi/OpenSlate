@@ -202,15 +202,34 @@ const pushClick = (val: string): true => {
   return true;
 };
 
+// Split on the first `=` outside of `[...]` bracket pairs. Attribute-
+// matcher selectors like textarea[aria-label="Search"] contain a `=`
+// inside the brackets that's part of the selector, not the value
+// separator. A naïve indexOf("=") would slice the selector mid-attribute.
+const splitTypeArg = (val: string): [string, string] | null => {
+  let bracket = 0;
+  for (let i = 0; i < val.length; i++) {
+    const c = val[i];
+    if (c === "[") bracket++;
+    else if (c === "]") bracket--;
+    else if (c === "=" && bracket === 0) {
+      if (i === 0 || i === val.length - 1) return null;
+      return [val.slice(0, i), val.slice(i + 1)];
+    }
+  }
+  return null;
+};
+
 const pushType = (val: string): true => {
-  const eq = val.indexOf("=");
-  if (eq < 1 || eq === val.length - 1) {
+  const split = splitTypeArg(val);
+  if (!split) {
     throw new InvalidArgumentError(`--type expects "<selector>=<text>", got: ${val}`);
   }
+  const [selector, value] = split;
   cliSteps.push({
     action: "type",
-    selector: val.slice(0, eq),
-    value: val.slice(eq + 1),
+    selector,
+    value,
     expected_duration_ms: DEFAULT_STEP_DURATIONS.type,
   });
   return true;
