@@ -22,7 +22,7 @@ This repo is the in-progress implementation. The OSS launch — with stable npm 
 
 ## What it is
 
-You install openSlate. Your AI coding agent (Claude Code, Cursor, Codex, OpenCode) gets six new tools via MCP. When you say "demo this," the agent reads your git diff, drives Playwright against your dev server, captures frame-accurate recordings, applies a polish pipeline encoded with the 10 motion-design principles, and exports a tweet-ready mp4 or gif. Your project gets a `polish.config.ts` you can tweak by asking your agent ("calmer zooms," "darker theme," "phone frame").
+You install openSlate. Your AI coding agent (Claude Code, Cursor, Codex, OpenCode) gets eight new tools via MCP. When you say "demo this," the agent reads your git diff, drives Playwright against your dev server, captures frame-accurate recordings, applies a polish pipeline encoded with the 10 motion-design principles, and exports a tweet-ready mp4 or gif. Your project gets a `polish.config.ts` you can tweak by asking your agent ("calmer zooms," "darker theme," "phone frame").
 
 ## What it isn't
 
@@ -60,17 +60,32 @@ Each principle has a concrete benchmark test the calibration week runs.
 ## Quickstart
 
 ```bash
-git clone https://github.com/shhdwi/openslate
-cd openslate
-bun install && bun run build
-bun examples/quickstart/demo.mjs
+npm install openslate          # or:  bun add openslate / pnpm add openslate
 ```
 
-That's it. **2–3 minutes** later: an mp4 in `./demos/` showing the canonical [nanoindex.nanonets.com/demo](https://nanoindex.nanonets.com/demo) flow — pick a benchmark question, send, watch the answer stream in, click a citation, switch to Entities. First run also downloads Chromium (~150MB, one-time).
+Three ways to use it, smallest to biggest. Pick whichever fits.
 
-### Adapt it for your site
+### 1. One-shot URL → mp4 (no scripting)
 
-Copy [examples/quickstart/demo.mjs](./examples/quickstart/demo.mjs) and edit the `steps` array. Each step is one of:
+```bash
+npx openslate quick https://your-app.com \
+  --click "button:has-text('Sign up')" \
+  --wait 800 \
+  --type "input[name=email]=alice@example.com" \
+  --click "button:has-text('Continue')"
+```
+
+`--click`, `--type`, and `--wait` are repeatable; argv order is preserved. For longer scenarios, pass `--steps demo.json` instead. Result lands in `./demos/` and auto-opens (macOS). First run downloads Chromium (~150MB, one-time).
+
+### 2. Scripted demo (multi-step, version-controlled)
+
+```bash
+npx openslate scaffold         # drops demo.mjs at project root
+# edit demo.mjs — base_url + steps array
+node demo.mjs
+```
+
+The scaffold gives you the full 4-call orchestration flow (`plan → execute → planEdit → export`) with a placeholder click step you replace. Same 7-action DSL as the agent path:
 
 | Action | Required | Does |
 |---|---|---|
@@ -82,25 +97,27 @@ Copy [examples/quickstart/demo.mjs](./examples/quickstart/demo.mjs) and edit the
 | `highlight` | `selector` | Camera spotlights the element |
 | `wait` | — | Holds for `expected_duration_ms` |
 
-Selectors are CSS or `:has-text(...)`. The recorder fail-softs on misses (logs which step missed and continues).
+Selectors are CSS or `:has-text(...)`. The recorder fail-softs on misses (logs which step missed and continues). Verify selectors before recording with `npx openslate preview <url>`.
 
-### One-URL one-liner
-
-For an even quicker test against any URL — no scripting, no config:
+### 3. Agent-driven (Claude Code / Cursor / Codex via MCP)
 
 ```bash
-bun src/cli/index.ts quick https://your-app.com --click "button:has-text('Sign up')"
+npx openslate init             # drops polish.config.ts, registers MCP project-locally
 ```
 
-Records, polishes, exports, auto-opens (macOS). The friendliest "first demo" path.
+Writes `.mcp.json` (Claude Code), `.cursor/mcp.json` (Cursor), or `~/.codex/config.json` (Codex) so your agent picks up 8 tools — `record_plan`, `record_execute`, `record_export`, `record_list`, `record_status`, `record_polish`, `polish_preview`, `polish_preview_after`. Then in your agent: **"demo this feature"**. Make sure your dev server is running first (typically `http://localhost:3000`).
 
-### Inside Claude Code / Cursor / Codex (MCP)
+### Canonical reference example
+
+The repo also ships a longer, hand-tuned reference: a 6-step walkthrough of [nanoindex.nanonets.com/demo](https://nanoindex.nanonets.com/demo). Clone and run from source:
 
 ```bash
-bun src/cli/index.ts init
+git clone https://github.com/shhdwi/openSlate && cd openSlate
+bun install && bun run build
+bun examples/quickstart/demo.mjs
 ```
 
-Drops a `polish.config.ts` at your project root and registers six tools with your agent. Then in the agent: **"demo this feature"** — the agent reads your git diff, drives the recorder, ships polished mp4.
+`./demos/ask-question-*.mp4` (~33s, 1080p) — pick a benchmark question, send, watch the answer stream in, click a citation, switch to Entities.
 
 ## Architecture
 
@@ -125,8 +142,8 @@ src/
 ├── recorder/     Playwright wrapper, event log
 ├── compositor/   Remotion compositions, cursor, frame, bg, auto-zoom
 ├── flourishes/   curated vector flourish library
-├── mcp/          MCP server + 6 tools
-├── cli/          openslate init, record, polish, export, mcp commands
+├── mcp/          MCP server + 8 tools
+├── cli/          openslate quick, scaffold, init, mcp, preview, export, list, plan
 └── config/       polish.config.ts loader
 skills/openslate/SKILL.md   single bundled skill (Claude Code, Cursor, Codex)
 benchmark/                   the calibration week artifacts

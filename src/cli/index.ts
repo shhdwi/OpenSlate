@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 /**
- * openSlate CLI. Five commands:
- *   - init     : scaffold polish.config.ts + register MCP + update .gitignore
- *   - record   : run a quick smoke recording (mostly for testing)
- *   - export   : render a polished mp4/gif from an existing recording
- *   - mcp      : start the MCP server (used by Claude Code / Cursor / Codex)
- *   - list     : list recordings in this project
+ * openSlate CLI. The three "primary" commands cover the npm-install →
+ * mp4 journey:
+ *   - quick     : one-shot URL → polished mp4, inline step flags
+ *   - scaffold  : drop a starter <name>.mjs at the project root
+ *   - init      : drop polish.config.ts + register MCP project-locally
  *
- * Most users won't invoke this directly; their agent will via MCP. The CLI
- * exists for CI use cases and for the smoke-test path.
+ * The agent path is `mcp` (started by Claude Code / Cursor / Codex via the
+ * MCP entry that `init` registers). The remaining commands (preview,
+ * export, plan, list, record) are escape hatches for power users and CI.
  */
 
 import path from "node:path";
-import { Command } from "commander";
+import fs from "node:fs/promises";
+import { Command, InvalidArgumentError } from "commander";
 import {
   orchestrateExecute,
   orchestrateExport,
@@ -24,6 +25,21 @@ import { preview } from "../inspect/index.js";
 import { startMcpServer } from "../mcp/index.js";
 import { ensureProjectDirs, recordingDir } from "../utils/paths.js";
 import { initProject } from "./init.js";
+import { renderScaffoldTemplate } from "./scaffold-template.js";
+import type { PlanStep, StepAction } from "../plan/types.js";
+
+// Default expected_duration_ms per action — used when the user passes a
+// step flag without specifying duration. Tuned to match the quickstart
+// reference example.
+const DEFAULT_STEP_DURATIONS: Record<Exclude<StepAction, "wait">, number> = {
+  navigate: 1500,
+  click: 1200,
+  type: 1500,
+  scroll: 800,
+  hover: 600,
+  highlight: 1500,
+  wait_for_selector: 800,
+};
 
 const program = new Command();
 
@@ -49,7 +65,40 @@ program
     if (result.gitignore_updated) {
       console.log(`✓ updated .gitignore`);
     }
-    console.log("\nNext: open Claude Code / Cursor / Codex and ask: 'demo this feature'.");
+    console.log(
+      `\nNext steps:\n` +
+        `  1. Make sure your dev server is running (typically http://localhost:3000)\n` +
+        `  2a. Open Claude Code / Cursor / Codex and ask: "demo this feature"\n` +
+        `      — or —\n` +
+        `  2b. Drop a multi-step starter script:  npx openslate scaffold\n` +
+        `      then edit it and run:  node demo.mjs`,
+    );
+  });
+
+program
+  .command("scaffold [name]")
+  .description(
+    "Drop a starter <name>.mjs at the project root with the canonical 4-step orchestration flow (plan → execute → planEdit → export). Edit the steps array, then run with node.",
+  )
+  .option("--url <url>", "dev server URL to use in the template", "http://localhost:3000")
+  .option("-f, --force", "overwrite existing file", false)
+  .action(async (name: string | undefined, opts: { url: string; force?: boolean }) => {
+    const protagonist = (name ?? "demo").replace(/\.(mjs|js|ts)$/i, "");
+    const filename = `${protagonist}.mjs`;
+    const target = path.resolve(process.cwd(), filename);
+    if (!opts.force) {
+      try {
+        await fs.access(target);
+        console.error(`✗ ${filename} already exists. Pass --force to overwrite.`);
+        process.exit(1);
+      } catch {
+        // file does not exist — happy path
+      }
+    }
+    const content = renderScaffoldTemplate({ url: opts.url, protagonist });
+    await fs.writeFile(target, content, "utf8");
+    console.log(`✓ wrote ${path.relative(process.cwd(), target)}`);
+    console.log(`\nNext: edit the steps array, then run:  node ${filename}`);
   });
 
 program
@@ -137,32 +186,86 @@ program
     });
   });
 
+// Shared closure that captures the order of step flags. Commander invokes
+// option coercers in argv order, so this array reflects the user's actual
+// intent across --click / --type / --wait. Per-option `opts` slots only
+// preserve order within a single flag — not across flags — which is why
+// we sidestep them.
+const cliSteps: PlanStep[] = [];
+
+const pushClick = (val: string): true => {
+  cliSteps.push({
+    action: "click",
+    selector: val,
+    expected_duration_ms: DEFAULT_STEP_DURATIONS.click,
+  });
+  return true;
+};
+
+const pushType = (val: string): true => {
+  const eq = val.indexOf("=");
+  if (eq < 1 || eq === val.length - 1) {
+    throw new InvalidArgumentError(`--type expects "<selector>=<text>", got: ${val}`);
+  }
+  cliSteps.push({
+    action: "type",
+    selector: val.slice(0, eq),
+    value: val.slice(eq + 1),
+    expected_duration_ms: DEFAULT_STEP_DURATIONS.type,
+  });
+  return true;
+};
+
+const pushWait = (val: string): true => {
+  const ms = Number.parseInt(val, 10);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw new InvalidArgumentError(`--wait expects a positive integer (ms), got: ${val}`);
+  }
+  cliSteps.push({ action: "wait", expected_duration_ms: ms });
+  return true;
+};
+
 program
   .command("quick <url>")
   .description(
-    "Record + polish + export a tiny demo of any URL. Zero config, no MCP needed — just give it a URL and optionally a selector to click. The result lands in ./demos/.",
+    "Record + polish + export a demo of any URL. Use --click / --type / --wait (repeatable, in order) for an inline scenario, or --steps <file.json> for a longer scenario. Result lands in ./demos/.",
   )
   .option(
     "--click <selector>",
-    "CSS selector to click after the page loads (e.g. \"button:has-text('Sign up')\")",
+    "click a CSS selector (repeatable; order with other step flags preserved)",
+    pushClick,
+  )
+  .option(
+    "--type <selector=text>",
+    "click a selector and type into it, e.g. \"input[name=email]=alice@example.com\" (repeatable)",
+    pushType,
+  )
+  .option(
+    "--wait <ms>",
+    "hold for N milliseconds between steps (repeatable)",
+    pushWait,
+  )
+  .option(
+    "--steps <file>",
+    "path to a JSON file with a steps array; mutually exclusive with --click/--type/--wait",
   )
   .option("-d, --description <text>", "description of the demo", "Quick demo")
   .option("--no-open", "don't auto-open the result in your default video player")
   .action(
     async (
       url: string,
-      opts: { click?: string; description: string; open?: boolean },
+      opts: { steps?: string; description: string; open?: boolean },
     ) => {
+      const userSteps = await resolveQuickSteps(opts.steps, cliSteps);
+
       const startedAt = Date.now();
       console.log(`▶ recording ${url}`);
       console.log(`  this takes 1–3 minutes (Chromium download is one-time on first run)`);
-      const steps = [
-        { action: "navigate" as const, selector: url, expected_duration_ms: 1500 },
-        { action: "wait" as const, expected_duration_ms: 800 },
-        ...(opts.click
-          ? [{ action: "click" as const, selector: opts.click, expected_duration_ms: 1200 }]
-          : []),
-        { action: "wait" as const, expected_duration_ms: 600 },
+      const steps: PlanStep[] = [
+        { action: "navigate", selector: url, expected_duration_ms: DEFAULT_STEP_DURATIONS.navigate },
+        { action: "wait", expected_duration_ms: 800 },
+        ...userSteps,
+        { action: "wait", expected_duration_ms: 600 },
       ];
 
       const planResult = await orchestratePlan({
@@ -190,6 +293,68 @@ program
       }
     },
   );
+
+async function resolveQuickSteps(
+  stepsFile: string | undefined,
+  inlineSteps: PlanStep[],
+): Promise<PlanStep[]> {
+  if (stepsFile && inlineSteps.length > 0) {
+    console.error(
+      "✗ --steps is mutually exclusive with --click/--type/--wait. Pick one input mode.",
+    );
+    process.exit(1);
+  }
+  if (!stepsFile) return inlineSteps;
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(stepsFile, "utf8");
+  } catch (err) {
+    console.error(`✗ failed to read --steps file ${stepsFile}: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(`✗ --steps file is not valid JSON: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  if (!Array.isArray(parsed)) {
+    console.error(`✗ --steps file must contain a JSON array of steps`);
+    process.exit(1);
+  }
+
+  const out: PlanStep[] = [];
+  parsed.forEach((s, i) => {
+    if (typeof s !== "object" || s === null) {
+      console.error(`✗ --steps[${i}] must be an object`);
+      process.exit(1);
+    }
+    const obj = s as Record<string, unknown>;
+    const action = obj.action;
+    if (typeof action !== "string") {
+      console.error(`✗ --steps[${i}].action is required`);
+      process.exit(1);
+    }
+    const step: PlanStep = {
+      action: action as StepAction,
+      expected_duration_ms:
+        typeof obj.expected_duration_ms === "number"
+          ? obj.expected_duration_ms
+          : action === "wait"
+            ? 600
+            : (DEFAULT_STEP_DURATIONS[action as Exclude<StepAction, "wait">] ?? 800),
+    };
+    if (typeof obj.selector === "string") step.selector = obj.selector;
+    if (typeof obj.value === "string") step.value = obj.value;
+    if (typeof obj.note === "string") step.note = obj.note;
+    if (typeof obj.no_zoom === "boolean") step.no_zoom = obj.no_zoom;
+    if (typeof obj.zoom === "number") step.zoom = obj.zoom;
+    out.push(step);
+  });
+  return out;
+}
 
 program
   .command("record")

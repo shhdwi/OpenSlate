@@ -93,20 +93,28 @@ async function ensurePackageJsonIsEsm(rootDir: string): Promise<void> {
   }
 }
 
-async function registerClaudeCode(_rootDir: string): Promise<string | null> {
-  // Project-local first; if no .claude/ dir, fall back to user-level settings.
-  const userPath = path.join(os.homedir(), ".claude", "settings.json");
-  await mergeMcpEntry(userPath, MCP_SERVER_NAME, claudeMcpEntry());
+async function registerClaudeCode(rootDir: string): Promise<string | null> {
+  // Project-shared `.mcp.json` at the repo root — committable, applies to
+  // anyone who clones the repo. This is the modern Claude Code convention
+  // for project-scoped MCP servers; openSlate is project-scoped (records
+  // the project's dev server), so this is the right slot.
+  const projectPath = path.join(rootDir, ".mcp.json");
+  await mergeMcpEntry(projectPath, MCP_SERVER_NAME, claudeMcpEntry());
   return "claude_code";
 }
 
-async function registerCursor(_rootDir: string): Promise<string | null> {
-  const userPath = path.join(os.homedir(), ".cursor", "mcp.json");
-  await mergeMcpEntry(userPath, MCP_SERVER_NAME, cursorMcpEntry());
+async function registerCursor(rootDir: string): Promise<string | null> {
+  // Cursor reads project-local `.cursor/mcp.json`. Same project-scoped
+  // reasoning as Claude Code.
+  const projectPath = path.join(rootDir, ".cursor", "mcp.json");
+  await mergeMcpEntry(projectPath, MCP_SERVER_NAME, cursorMcpEntry());
   return "cursor";
 }
 
 async function registerCodex(_rootDir: string): Promise<string | null> {
+  // Codex doesn't have a widely-adopted project-local MCP convention, so
+  // keep the user-level config to avoid inventing one. Re-evaluate when /
+  // if Codex ships project-scoped MCP support.
   const userPath = path.join(os.homedir(), ".codex", "config.json");
   await mergeMcpEntry(userPath, MCP_SERVER_NAME, codexMcpEntry());
   return "codex";
