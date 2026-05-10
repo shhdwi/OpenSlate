@@ -20,6 +20,12 @@ struct CursorSample {
     /// Screen-absolute pixel coordinates, top-left origin.
     let x: Double
     let y: Double
+    /// Coarse cursor "kind" — what NSCursor.current is showing on the
+    /// frontmost app at the moment of sample. The compositor uses this
+    /// to swap sprites (arrow → text I-beam → pointer hand → grab →
+    /// not-allowed). Approximate: it reflects the frontmost app's
+    /// chosen cursor, which usually matches what the user sees.
+    let kind: String
 }
 
 /// Snapshot of the primary display geometry. Matches what the browser
@@ -97,7 +103,35 @@ final class CursorTracker {
         let yPx = topLeftY * scale
 
         let elapsedMs = Int((monotonicNs() &- startMonotonicNs) / 1_000_000)
-        return CursorSample(tMs: elapsedMs, x: xPx, y: yPx)
+        return CursorSample(tMs: elapsedMs, x: xPx, y: yPx, kind: currentCursorKind())
+    }
+
+    var startedMonotonicNs: UInt64 { startMonotonicNs }
+    var primaryHeightPoints: Double { Double(display.heightPoints) }
+    var primaryScale: Double { display.scale }
+
+    /// Coarse-bucket the system cursor into the sprite kinds shipped
+    /// with openSlate. The match is heuristic — Cocoa exposes cursors
+    /// as image hashes; we compare against the well-known system
+    /// cursors. Anything we don't recognize falls back to "arrow".
+    private func currentCursorKind() -> String {
+        let c = NSCursor.current
+        // Object-identity comparison against the Cocoa singletons. This
+        // is safe because NSCursor caches its singletons; the comparison
+        // works whether or not the active cursor was set by the system
+        // or by an app via NSCursor.<x>.set().
+        switch c {
+        case NSCursor.iBeam, NSCursor.iBeamCursorForVerticalLayout:
+            return "text"
+        case NSCursor.pointingHand:
+            return "pointer"
+        case NSCursor.openHand, NSCursor.closedHand, NSCursor.dragLink, NSCursor.dragCopy:
+            return "grab"
+        case NSCursor.operationNotAllowed:
+            return "not-allowed"
+        default:
+            return "arrow"
+        }
     }
 
     // MARK: - helpers

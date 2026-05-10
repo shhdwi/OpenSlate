@@ -1,15 +1,14 @@
 /**
- * The recorder UI page served by web-server.ts. A single self-contained
- * HTML document — no build step, no framework, no external network
- * deps. Style is intentionally calm; this is the openSlate brand.
+ * Recorder page served by web-server.ts. Single self-contained HTML
+ * document — no build step, no framework, no external network deps.
  *
  * Lifecycle:
- *   1. User clicks "Start"
- *   2. navigator.mediaDevices.getDisplayMedia → user picks a screen/window/tab
- *   3. We MediaRecorder the stream into chunks
- *   4. User clicks "Stop"
- *   5. We POST the assembled blob to /upload as multipart/form-data
- *   6. Server processes; we poll /status and show the final mp4 path
+ *   1. Page load → probe openslate-helper on ws://127.0.0.1:9292
+ *   2. User clicks "Start" → getDisplayMedia (cursor stripped if helper
+ *      present); MediaRecorder begins; helper streams cursor + click
+ *      events
+ *   3. User clicks "Stop" → POST blob + helper events to /upload
+ *   4. Server polishes; we poll /status and show the final mp4 path
  */
 
 export const RECORDER_HTML = `<!doctype html>
@@ -45,13 +44,12 @@ export const RECORDER_HTML = `<!doctype html>
   .sub {
     color: #9c9caa;
     font-size: 14px;
-    margin: 0 0 40px;
+    margin: 0 0 28px;
   }
   button {
     font-family: inherit;
     font-size: 15px;
     font-weight: 500;
-    letter-spacing: 0;
     border: 0;
     border-radius: 12px;
     padding: 14px 28px;
@@ -60,19 +58,55 @@ export const RECORDER_HTML = `<!doctype html>
   }
   button:active { transform: translateY(1px); }
   button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-  .primary {
-    background: #5b5bff;
-    color: #fff;
-  }
+  .primary { background: #5b5bff; color: #fff; }
   .primary:hover:not(:disabled) { background: #4848e0; }
-  .danger {
-    background: #ff4848;
-    color: #fff;
-  }
+  .danger { background: #ff4848; color: #fff; }
   .danger:hover:not(:disabled) { background: #e03c3c; }
+  .row { display: flex; justify-content: center; gap: 12px; }
+  .hidden { display: none !important; }
+
+  .timer {
+    font-variant-numeric: tabular-nums;
+    font-size: 36px;
+    font-weight: 600;
+    margin: 8px 0 24px;
+    color: #ffc857;
+    visibility: hidden;
+  }
+  .timer.live { visibility: visible; }
+
+  /* Capability panel — shows helper / accessibility state */
+  .caps {
+    margin: 0 0 24px;
+    padding: 14px 18px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .caps .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #9c9caa;
+  }
+  .caps .item + .item { margin-top: 6px; }
+  .caps .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .caps .ok .dot { background: #4dd987; box-shadow: 0 0 6px #4dd987; }
+  .caps .ok { color: #f7f7fa; }
+  .caps .miss .dot { background: #585866; }
+  .caps a { color: #ffc857; }
+
   .status {
-    margin-top: 32px;
-    padding: 16px 20px;
+    margin-top: 24px;
+    padding: 14px 18px;
     border-radius: 10px;
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.08);
@@ -90,23 +124,23 @@ export const RECORDER_HTML = `<!doctype html>
     color: #ffc857;
     word-break: break-all;
   }
-  .timer {
-    font-variant-numeric: tabular-nums;
-    font-size: 36px;
-    font-weight: 600;
-    margin: 8px 0 24px;
-    color: #ffc857;
-    visibility: hidden;
-  }
-  .timer.live { visibility: visible; }
-  .row { display: flex; justify-content: center; gap: 12px; }
-  .hidden { display: none !important; }
 </style>
 </head>
 <body>
 <main>
   <h1>openSlate</h1>
-  <p class="sub">Record any window or screen. Polish locally. Export an mp4.</p>
+  <p class="sub">Record any window. Polish locally. Export an mp4.</p>
+
+  <div class="caps" id="caps">
+    <div class="item miss" id="cap-helper">
+      <div class="dot"></div>
+      <div><strong>Helper</strong> — checking…</div>
+    </div>
+    <div class="item miss" id="cap-ax">
+      <div class="dot"></div>
+      <div><strong>Accessibility</strong> — checked when recording starts</div>
+    </div>
+  </div>
 
   <div class="timer" id="timer">00:00</div>
 
@@ -116,7 +150,7 @@ export const RECORDER_HTML = `<!doctype html>
   </div>
 
   <div class="status" id="status">
-    Click <strong>Start recording</strong>, choose a window or screen, perform your demo, then click <strong>Stop</strong>. The polish runs locally; no upload to any remote server.
+    Click <strong>Start recording</strong>, choose a window or screen, perform your demo, then click <strong>Stop</strong>. Polish runs locally; nothing leaves your machine.
   </div>
 </main>
 
@@ -126,12 +160,21 @@ export const RECORDER_HTML = `<!doctype html>
   const stopBtn = document.getElementById("stop");
   const status = document.getElementById("status");
   const timer = document.getElementById("timer");
+  const capHelper = document.getElementById("cap-helper");
+  const capAx = document.getElementById("cap-ax");
 
   let mediaStream = null;
   let recorder = null;
   let chunks = [];
   let startedAt = 0;
   let timerHandle = null;
+
+  let helperWs = null;
+  let helperConnected = false;
+  let helperStarted = null;
+  let helperHasAccessibility = false;
+  let cursorSamples = [];
+  let clickEvents = [];
 
   function setStatus(html) { status.innerHTML = html; }
   function fmtTime(ms) {
@@ -140,51 +183,95 @@ export const RECORDER_HTML = `<!doctype html>
     const ss = String(s % 60).padStart(2, "0");
     return mm + ":" + ss;
   }
+  function setCap(el, ok, html) {
+    el.classList.remove("ok", "miss");
+    el.classList.add(ok ? "ok" : "miss");
+    el.querySelector("div:last-child").innerHTML = html;
+  }
 
-  let helperWs = null;
-  let helperConnected = false;
-  let helperStarted = null; // { screen_w, screen_h, scale }
-  let cursorSamples = []; // collected during recording
-
-  // Try to connect to openslate-helper. If it's running we get clean
-  // cursor data + can hide the system cursor in the capture; if not,
-  // fall back to a system-cursor-visible recording.
-  async function connectHelper(timeoutMs) {
+  // Try to open a WebSocket to the helper. Used both at page load
+  // (status probe) and at record start (live data). Resolves with the
+  // WebSocket on success, null on failure or timeout.
+  function openHelperWs(timeoutMs) {
     return new Promise((resolve) => {
       let resolved = false;
       const ws = new WebSocket("ws://127.0.0.1:9292");
-      const finish = (ok) => {
-        if (resolved) return;
-        resolved = true;
-        resolve(ok);
-      };
-      ws.onopen = () => {
-        helperWs = ws;
-        helperConnected = true;
-        finish(true);
-      };
-      ws.onerror = () => finish(false);
-      setTimeout(() => finish(false), timeoutMs);
-      ws.onmessage = (ev) => {
-        try {
-          const m = JSON.parse(ev.data);
-          if (m.type === "started") {
-            helperStarted = { screen_w: m.screen_w, screen_h: m.screen_h, scale: m.scale };
-          } else if (m.type === "cursor") {
-            cursorSamples.push({ t_ms: m.t_ms, x: m.x, y: m.y });
-          }
-        } catch {}
-      };
+      const finish = (val) => { if (!resolved) { resolved = true; resolve(val); } };
+      ws.onopen = () => finish(ws);
+      ws.onerror = () => finish(null);
+      setTimeout(() => finish(null), timeoutMs);
     });
   }
 
-  startBtn.addEventListener("click", async () => {
-    cursorSamples = [];
-    helperStarted = null;
+  // Probe at page load. Open a WS, send {cmd:"start"} just long enough
+  // to hear the {type:"started", accessibility:bool} message, then
+  // close. This tells us whether to show the AX permission line.
+  async function probeHelper() {
+    setCap(capHelper, false, "<strong>Helper</strong> — checking…");
+    const ws = await openHelperWs(300);
+    if (!ws) {
+      setCap(capHelper, false,
+        "<strong>Helper not running</strong> — recordings will use the system cursor. " +
+        "<a href=\\"https://github.com/shhdwi/openslate/tree/main/helper-mac\\" target=\\"_blank\\" rel=\\"noopener\\">Install</a>.");
+      setCap(capAx, false, "<strong>Accessibility</strong> — n/a without helper");
+      return;
+    }
+    setCap(capHelper, true, "<strong>Helper detected</strong>");
+    let gotStarted = false;
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.type === "started" && !gotStarted) {
+          gotStarted = true;
+          if (m.accessibility) {
+            setCap(capAx, true,
+              "<strong>Accessibility granted</strong> — full click polish");
+          } else {
+            setCap(capAx, false,
+              "<strong>Accessibility not granted</strong> — clicks detected by heuristic. " +
+              "Grant in System Settings → Privacy & Security → Accessibility for precise click events.");
+          }
+          ws.send(JSON.stringify({ cmd: "stop" }));
+          ws.close();
+        }
+      } catch {}
+    };
+    ws.send(JSON.stringify({ cmd: "start" }));
+  }
 
-    // Try the helper first; 250 ms is plenty for a localhost WS open.
-    const ok = await connectHelper(250);
-    const useNativeCursor = ok;
+  probeHelper();
+
+  // Open a fresh WS for the actual recording. Live stream of cursor
+  // and click events into our local arrays.
+  async function connectHelperForRecording() {
+    const ws = await openHelperWs(250);
+    if (!ws) return false;
+    helperWs = ws;
+    helperConnected = true;
+    cursorSamples = [];
+    clickEvents = [];
+    helperHasAccessibility = false;
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.type === "started") {
+          helperStarted = { screen_w: m.screen_w, screen_h: m.screen_h, scale: m.scale };
+          helperHasAccessibility = !!m.accessibility;
+        } else if (m.type === "cursor") {
+          cursorSamples.push({ t_ms: m.t_ms, x: m.x, y: m.y, kind: m.kind || "arrow" });
+        } else if (m.type === "click") {
+          clickEvents.push({ t_ms: m.t_ms, x: m.x, y: m.y, kind: m.kind || "left" });
+        }
+      } catch {}
+    };
+    ws.onclose = () => { helperConnected = false; };
+    ws.send(JSON.stringify({ cmd: "start" }));
+    return true;
+  }
+
+  startBtn.addEventListener("click", async () => {
+    helperStarted = null;
+    const useHelper = await connectHelperForRecording();
 
     try {
       mediaStream = await navigator.mediaDevices.getDisplayMedia({
@@ -194,26 +281,20 @@ export const RECORDER_HTML = `<!doctype html>
           // our own polished sprite at the recorded positions.
           // Without it, leave the system cursor visible (no source for
           // position data, so an "empty" recording would have nothing).
-          cursor: useNativeCursor ? "never" : "always",
+          cursor: useHelper ? "never" : "always",
         },
         audio: false,
       });
     } catch (err) {
       setStatus("Permission denied or no display selected. Try again.");
+      if (helperWs) { helperWs.close(); helperWs = null; helperConnected = false; }
       return;
     }
 
-    if (helperWs && helperConnected) {
-      helperWs.send(JSON.stringify({ cmd: "start" }));
-    }
-
-    // Stop chosen by closing the share-banner: end the recording cleanly.
     mediaStream.getVideoTracks()[0]?.addEventListener("ended", () => {
       if (recorder && recorder.state !== "inactive") recorder.stop();
     });
 
-    // Pick the best available webm codec. Newer Chromes support av01;
-    // most still ship with vp9. h264 (Safari) handled via fallback.
     const candidates = [
       "video/webm;codecs=av01",
       "video/webm;codecs=vp9",
@@ -225,7 +306,7 @@ export const RECORDER_HTML = `<!doctype html>
     recorder = new MediaRecorder(mediaStream, { mimeType, videoBitsPerSecond: 8_000_000 });
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = onRecordingStop;
-    recorder.start(1000); // 1s chunks; final blob assembled on stop
+    recorder.start(1000);
 
     startedAt = Date.now();
     timer.classList.add("live");
@@ -263,14 +344,10 @@ export const RECORDER_HTML = `<!doctype html>
     const fd = new FormData();
     fd.append("video", blob, "recording." + ext);
     fd.append("duration_ms", String(Date.now() - startedAt));
-    // Cursor data — empty array if no helper. Server treats absence as
-    // "no native cursor stream"; the polish pipeline falls back to
-    // not rendering a cursor sprite (the captured video already shows
-    // the system cursor in that mode).
     fd.append("cursor_samples", JSON.stringify(cursorSamples));
-    if (helperStarted) {
-      fd.append("helper_screen", JSON.stringify(helperStarted));
-    }
+    fd.append("click_events", JSON.stringify(clickEvents));
+    if (helperStarted) fd.append("helper_screen", JSON.stringify(helperStarted));
+
     let res;
     try {
       res = await fetch("/upload", { method: "POST", body: fd });
@@ -286,8 +363,6 @@ export const RECORDER_HTML = `<!doctype html>
     if (j.error) { setStatus("Server error: " + j.error); return; }
     setStatus(\`Polishing… recording id <code>\${j.recording_id}\`);
 
-    // Poll for completion. Cap at ~6 minutes (450 polls × 800ms) so
-    // an unresponsive server doesn't loop forever in the user's tab.
     let polls = 0;
     const POLL_CEILING = 450;
     const poll = async () => {
@@ -298,14 +373,19 @@ export const RECORDER_HTML = `<!doctype html>
       const r = await fetch("/status?id=" + encodeURIComponent(j.recording_id));
       const s = await r.json();
       if (s.state === "done") {
+        // Reset UI for another take.
+        startBtn.classList.remove("hidden");
+        stopBtn.classList.add("hidden");
         setStatus(
           "Done! Output: <code>" + s.output_path + "</code><br>" +
           (s.size_bytes ? (s.size_bytes / 1024 / 1024).toFixed(2) + " MB · " : "") +
-          "Auto-opened on macOS. You can close this tab."
+          "Auto-opened on macOS. Press <strong>Start</strong> for another take."
         );
         return;
       }
       if (s.state === "error") {
+        startBtn.classList.remove("hidden");
+        stopBtn.classList.add("hidden");
         setStatus("Polish failed: <code>" + (s.error || "unknown") + "</code>");
         return;
       }

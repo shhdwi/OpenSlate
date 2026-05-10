@@ -152,14 +152,18 @@ export async function startWebRecorderServer(
 
       // If the helper streamed cursor data, replace ingestVideo's
       // empty cursor.json + frame_start-only events.json with the
-      // real position track + heuristic click events. Coordinates
-      // come in as absolute screen pixels at the helper's reported
-      // scale; we down-rescale to the captured video's native
-      // resolution (which is what manifest.viewport stores).
+      // real position track. Coordinates come in as absolute screen
+      // pixels at the helper's reported scale; we down-rescale to the
+      // captured video's native resolution.
+      //
+      // Click events: prefer the helper's explicit click stream (from
+      // CGEventTap, only present if Accessibility was granted); fall
+      // back to a heuristic on the cursor track if not.
       if (parsed.cursor_samples.length > 0 && parsed.helper_screen) {
         await writeCursorAndClicks(
           dir,
           parsed.cursor_samples,
+          parsed.click_events,
           parsed.helper_screen,
         );
       }
@@ -214,26 +218,25 @@ function sendHtml(res: ServerResponse, body: string) {
 }
 
 interface ParsedUpload {
-  cursor_samples: Array<{ t_ms: number; x: number; y: number }>;
+  cursor_samples: Array<{ t_ms: number; x: number; y: number; kind?: string }>;
+  click_events: Array<{ t_ms: number; x: number; y: number; kind?: string }>;
   helper_screen: { screen_w: number; screen_h: number; scale: number } | null;
 }
 
 /**
- * Write the helper-derived cursor track to cursor.json and detect
- * heuristic click events from cursor motion (settle → tiny jitter →
- * resume), writing them to events.json. Coordinates are translated
- * from helper screen-pixels into the captured video's viewport coords
- * by reading manifest.json (written by ingestVideo just before this).
+ * Write the helper-derived cursor track to cursor.json + emit click
+ * events to events.json. Coordinates translated from helper screen
+ * pixels to the captured video's viewport coords via manifest.viewport.
  *
- * Click heuristic — cheap and good-enough for v1:
- *   - "settled" = cursor stays within 2px for >= 120ms
- *   - end of a settled window where the cursor then moves > 8px is a
- *     candidate click
- *   - dedupe to one event per ~500ms cluster
+ * Click event source: prefer the helper's explicit click stream (from
+ * CGEventTap, only present if Accessibility was granted). If empty,
+ * fall back to deriving clicks from cursor motion via a settle→jitter
+ * heuristic — works without Accessibility but less precise.
  */
 async function writeCursorAndClicks(
   recording_dir: string,
-  raw_samples: Array<{ t_ms: number; x: number; y: number }>,
+  raw_samples: Array<{ t_ms: number; x: number; y: number; kind?: string }>,
+  raw_clicks: Array<{ t_ms: number; x: number; y: number; kind?: string }>,
   helper_screen: { screen_w: number; screen_h: number; scale: number },
 ): Promise<void> {
   const manifest = JSON.parse(
@@ -241,9 +244,6 @@ async function writeCursorAndClicks(
   );
   const vp_w: number = manifest.viewport.width;
   const vp_h: number = manifest.viewport.height;
-  // The helper reports in screen pixels at the helper's scale. The
-  // captured video frames are at vp_w × vp_h pixels (whatever
-  // getDisplayMedia returned). Linear scale.
   const sx = vp_w / Math.max(1, helper_screen.screen_w);
   const sy = vp_h / Math.max(1, helper_screen.screen_h);
 
@@ -251,14 +251,26 @@ async function writeCursorAndClicks(
     t_ms: s.t_ms,
     x: Math.round(s.x * sx),
     y: Math.round(s.y * sy),
+    ...(s.kind ? { kind: s.kind } : {}),
   }));
   await fs.writeFile(
     path.join(recording_dir, "cursor.json"),
     JSON.stringify(cursor_json),
   );
 
-  const clicks = detectClicks(cursor_json);
-  // Replace events.json (ingestVideo wrote a frame_start-only stub).
+  // Use explicit clicks when available; the helper only sends them
+  // when Accessibility is granted, and they're more precise than the
+  // dwell heuristic. Filter to "left" clicks only — right/other clicks
+  // open menus we don't want to zoom on.
+  const explicit = raw_clicks
+    .filter((c) => !c.kind || c.kind === "left")
+    .map((c) => ({
+      t_ms: c.t_ms,
+      x: Math.round(c.x * sx),
+      y: Math.round(c.y * sy),
+    }));
+  const clicks = explicit.length > 0 ? explicit : detectClicks(cursor_json);
+
   await fs.writeFile(
     path.join(recording_dir, "events.json"),
     JSON.stringify(
@@ -364,7 +376,7 @@ async function parseMultipart(
   let textField: string | null = null; // current text part name
   let textBuf = "";
 
-  const result: ParsedUpload = { cursor_samples: [], helper_screen: null };
+  const result: ParsedUpload = { cursor_samples: [], click_events: [], helper_screen: null };
 
   return new Promise((resolve, reject) => {
     req.on("data", onChunk);
@@ -406,7 +418,7 @@ async function parseMultipart(
             consumeVideo(remainder);
             return;
           }
-          if (name === "cursor_samples" || name === "helper_screen") {
+          if (name === "cursor_samples" || name === "click_events" || name === "helper_screen") {
             mode = "text";
             textField = name;
             textBuf = "";
@@ -464,21 +476,23 @@ async function parseMultipart(
     }
 
     function captureTextField() {
-      if (textField === "cursor_samples") {
+      if (textField === "cursor_samples" || textField === "click_events") {
         try {
           const arr = JSON.parse(textBuf);
           if (Array.isArray(arr)) {
-            result.cursor_samples = arr.filter(
+            const clean = arr.filter(
               (s) =>
                 s &&
                 typeof s.t_ms === "number" &&
                 typeof s.x === "number" &&
                 typeof s.y === "number",
             );
+            if (textField === "cursor_samples") result.cursor_samples = clean;
+            else result.click_events = clean;
           }
         } catch {
-          // tolerate a bad cursor payload — ingest still produces a
-          // working mp4 without it
+          // tolerate a bad payload — ingest still produces a working
+          // mp4 without these augmentations
         }
       } else if (textField === "helper_screen") {
         try {

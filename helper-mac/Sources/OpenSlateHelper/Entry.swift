@@ -10,13 +10,19 @@
 //
 // Wire protocol (text frames, line-delimited JSON):
 //   client  → server   {"cmd":"start"}
-//   server  → client   {"type":"started","screen_w":1920,"screen_h":1080,"scale":2}
-//   server  → client   {"type":"cursor","t_ms":17,"x":824.5,"y":412.3}
+//   server  → client   {"type":"started","screen_w":1920,"screen_h":1080,"scale":2,
+//                       "accessibility":true|false}
+//   server  → client   {"type":"cursor","t_ms":17,"x":824.5,"y":412.3,"kind":"arrow"}
 //                      ... ~125 Hz while running
+//   server  → client   {"type":"click","t_ms":523,"x":824.5,"y":412.3,"kind":"left"}
+//                      (only when Accessibility permission has been granted)
 //   client  → server   {"cmd":"stop"}
 //   client  → server   {"cmd":"start"}        // can re-arm
 //
-// No TCC permissions required. NSEvent.mouseLocation is a public API.
+// Cursor + display polling work without any TCC permissions. The
+// Accessibility permission is requested only if the host needs real
+// click events (vs the heuristic the recorder server can derive from
+// the cursor track).
 
 import AppKit
 import Foundation
@@ -25,6 +31,7 @@ import Foundation
 final class HelperApp {
     let server: WSServer
     let tracker = CursorTracker()
+    let clickTap = ClickTap()
     var streaming = false
 
     init(port: UInt16) {
@@ -72,30 +79,53 @@ final class HelperApp {
     private func startStreaming() {
         if streaming { return }
         streaming = true
-        // Capture display info before we hand the tracker a callback so
-        // we can announce dimensions to the client first — useful for
-        // the JS side to know the coordinate space.
         tracker.start(sampleRateHz: 125) { [weak self] sample in
             guard let self = self, self.streaming else { return }
             let json =
                 "{\"type\":\"cursor\","
                 + "\"t_ms\":\(sample.tMs),"
                 + "\"x\":\(formatNumber(sample.x)),"
-                + "\"y\":\(formatNumber(sample.y))}"
+                + "\"y\":\(formatNumber(sample.y)),"
+                + "\"kind\":\"\(sample.kind)\"}"
             self.server.send(json)
         }
+        // Click tap requires Accessibility permission. If we have it,
+        // start it on the same monotonic epoch as the cursor tracker
+        // so timestamps line up. If not, the recorder server falls
+        // back to the cursor-track heuristic.
+        let hasAX = ClickTap.hasAccessibilityPermission()
+        if hasAX {
+            clickTap.start(
+                startMonotonicNs: tracker.startedMonotonicNs,
+                primaryHeightPoints: tracker.primaryHeightPoints,
+                primaryScale: tracker.primaryScale,
+                onClick: { [weak self] click in
+                    guard let self = self, self.streaming else { return }
+                    let json =
+                        "{\"type\":\"click\","
+                        + "\"t_ms\":\(click.tMs),"
+                        + "\"x\":\(formatNumber(click.x)),"
+                        + "\"y\":\(formatNumber(click.y)),"
+                        + "\"kind\":\"\(click.kind)\"}"
+                    self.server.send(json)
+                }
+            )
+        }
+
         let info = tracker.display
         let started =
             "{\"type\":\"started\","
             + "\"screen_w\":\(info.widthPixels),"
             + "\"screen_h\":\(info.heightPixels),"
-            + "\"scale\":\(info.scale)}"
+            + "\"scale\":\(info.scale),"
+            + "\"accessibility\":\(hasAX ? "true" : "false")}"
         server.send(started)
     }
 
     private func stopStreaming() {
         streaming = false
         tracker.stop()
+        clickTap.stop()
     }
 }
 

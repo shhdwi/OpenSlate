@@ -70,17 +70,22 @@ program
     const helperRoot = path.resolve(import.meta.dirname ?? __dirname, "../../helper-mac");
     if (action === "build") {
       const { spawn } = await import("node:child_process");
-      const proc = spawn("swift", ["build", "-c", "release"], {
+      // Debug build — it's 8s vs 60s for release, the binary is 90 KB
+      // larger (negligible), and there's a Swift 6.0 release-mode
+      // incremental-cache quirk that occasionally serves stale objects
+      // for this package. Performance isn't a concern (the helper polls
+      // a single Cocoa method at 125 Hz; debug-mode is plenty fast).
+      const proc = spawn("swift", ["build"], {
         cwd: helperRoot,
         stdio: "inherit",
       });
       const code = await new Promise<number>((resolve) => proc.on("close", resolve));
       if (code !== 0) process.exit(code);
-      console.log(`✓ helper built at ${helperRoot}/.build/release/openslate-helper`);
+      console.log(`✓ helper built at ${helperRoot}/.build/debug/openslate-helper`);
       return;
     }
     if (action === "start") {
-      const binary = path.join(helperRoot, ".build/release/openslate-helper");
+      const binary = path.join(helperRoot, ".build/debug/openslate-helper");
       const { existsSync } = await import("node:fs");
       if (!existsSync(binary)) {
         console.error(`✗ helper binary not found. Run \`openslate helper build\` first.`);
