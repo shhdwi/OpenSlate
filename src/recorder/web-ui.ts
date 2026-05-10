@@ -141,22 +141,70 @@ export const RECORDER_HTML = `<!doctype html>
     return mm + ":" + ss;
   }
 
+  let helperWs = null;
+  let helperConnected = false;
+  let helperStarted = null; // { screen_w, screen_h, scale }
+  let cursorSamples = []; // collected during recording
+
+  // Try to connect to openslate-helper. If it's running we get clean
+  // cursor data + can hide the system cursor in the capture; if not,
+  // fall back to a system-cursor-visible recording.
+  async function connectHelper(timeoutMs) {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const ws = new WebSocket("ws://127.0.0.1:9292");
+      const finish = (ok) => {
+        if (resolved) return;
+        resolved = true;
+        resolve(ok);
+      };
+      ws.onopen = () => {
+        helperWs = ws;
+        helperConnected = true;
+        finish(true);
+      };
+      ws.onerror = () => finish(false);
+      setTimeout(() => finish(false), timeoutMs);
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.type === "started") {
+            helperStarted = { screen_w: m.screen_w, screen_h: m.screen_h, scale: m.scale };
+          } else if (m.type === "cursor") {
+            cursorSamples.push({ t_ms: m.t_ms, x: m.x, y: m.y });
+          }
+        } catch {}
+      };
+    });
+  }
+
   startBtn.addEventListener("click", async () => {
+    cursorSamples = [];
+    helperStarted = null;
+
+    // Try the helper first; 250 ms is plenty for a localhost WS open.
+    const ok = await connectHelper(250);
+    const useNativeCursor = ok;
+
     try {
       mediaStream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           frameRate: { ideal: 60, max: 60 },
-          // displaySurface left default so the user picks. cursor:"always"
-          // keeps the system cursor visible — without a native helper to
-          // track position, hiding it would just leave an empty
-          // recording.
-          cursor: "always",
+          // With the helper, hide the system cursor — we'll redraw
+          // our own polished sprite at the recorded positions.
+          // Without it, leave the system cursor visible (no source for
+          // position data, so an "empty" recording would have nothing).
+          cursor: useNativeCursor ? "never" : "always",
         },
         audio: false,
       });
     } catch (err) {
       setStatus("Permission denied or no display selected. Try again.");
       return;
+    }
+
+    if (helperWs && helperConnected) {
+      helperWs.send(JSON.stringify({ cmd: "start" }));
     }
 
     // Stop chosen by closing the share-banner: end the recording cleanly.
@@ -193,6 +241,12 @@ export const RECORDER_HTML = `<!doctype html>
   stopBtn.addEventListener("click", () => {
     if (recorder && recorder.state !== "inactive") recorder.stop();
     if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+    if (helperWs && helperConnected) {
+      helperWs.send(JSON.stringify({ cmd: "stop" }));
+      helperWs.close();
+      helperWs = null;
+      helperConnected = false;
+    }
   });
 
   async function onRecordingStop() {
@@ -209,6 +263,14 @@ export const RECORDER_HTML = `<!doctype html>
     const fd = new FormData();
     fd.append("video", blob, "recording." + ext);
     fd.append("duration_ms", String(Date.now() - startedAt));
+    // Cursor data — empty array if no helper. Server treats absence as
+    // "no native cursor stream"; the polish pipeline falls back to
+    // not rendering a cursor sprite (the captured video already shows
+    // the system cursor in that mode).
+    fd.append("cursor_samples", JSON.stringify(cursorSamples));
+    if (helperStarted) {
+      fd.append("helper_screen", JSON.stringify(helperStarted));
+    }
     let res;
     try {
       res = await fetch("/upload", { method: "POST", body: fd });

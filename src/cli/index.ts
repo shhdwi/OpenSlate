@@ -60,6 +60,42 @@ program
   });
 
 program
+  .command("helper")
+  .description(
+    "Build + run the openslate-helper macOS daemon (Swift binary). The helper streams the global cursor position over a local WebSocket so the web recorder can render a polished cursor sprite at the recorded positions (instead of the raw system cursor). macOS only.",
+  )
+  .argument("<action>", "build | start")
+  .option("--port <n>", "WebSocket port (default 9292)", "9292")
+  .action(async (action: string, opts: { port: string }) => {
+    const helperRoot = path.resolve(import.meta.dirname ?? __dirname, "../../helper-mac");
+    if (action === "build") {
+      const { spawn } = await import("node:child_process");
+      const proc = spawn("swift", ["build", "-c", "release"], {
+        cwd: helperRoot,
+        stdio: "inherit",
+      });
+      const code = await new Promise<number>((resolve) => proc.on("close", resolve));
+      if (code !== 0) process.exit(code);
+      console.log(`✓ helper built at ${helperRoot}/.build/release/openslate-helper`);
+      return;
+    }
+    if (action === "start") {
+      const binary = path.join(helperRoot, ".build/release/openslate-helper");
+      const { existsSync } = await import("node:fs");
+      if (!existsSync(binary)) {
+        console.error(`✗ helper binary not found. Run \`openslate helper build\` first.`);
+        process.exit(1);
+      }
+      const { spawn } = await import("node:child_process");
+      const proc = spawn(binary, ["--port", opts.port], { stdio: "inherit" });
+      await new Promise<void>((resolve) => proc.on("close", () => resolve()));
+      return;
+    }
+    console.error(`✗ unknown action: ${action} (expected build | start)`);
+    process.exit(1);
+  });
+
+program
   .command("record-web")
   .description(
     "Open a local browser page that records your screen via getDisplayMedia. Stop the recording and openSlate polishes the video locally — frame chrome, gradient bg, intro/outro, optional 3D tilt. Zero install: nothing leaves your machine.",

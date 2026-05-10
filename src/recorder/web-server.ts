@@ -117,8 +117,9 @@ export async function startWebRecorderServer(
     const dir = recordingDir(paths, recording_id);
     await fs.mkdir(dir, { recursive: true });
     const video_path = path.join(dir, "source.webm");
+    let parsed: ParsedUpload;
     try {
-      await pipeMultipartVideo(req, video_path);
+      parsed = await parseMultipart(req, video_path);
     } catch (err) {
       sendJson(res, 400, { error: `multipart parse: ${(err as Error).message}` });
       return;
@@ -131,10 +132,15 @@ export async function startWebRecorderServer(
     sendJson(res, 200, { recording_id });
 
     // Fire and forget; status endpoint surfaces progress + result.
-    void runPolishJob(job, dir, video_path);
+    void runPolishJob(job, dir, video_path, parsed);
   }
 
-  async function runPolishJob(job: Job, dir: string, video_path: string): Promise<void> {
+  async function runPolishJob(
+    job: Job,
+    dir: string,
+    video_path: string,
+    parsed: ParsedUpload,
+  ): Promise<void> {
     try {
       job.state = "ingesting";
       await ingestVideo({
@@ -143,6 +149,20 @@ export async function startWebRecorderServer(
         recording_id: job.id,
         fps: 60,
       });
+
+      // If the helper streamed cursor data, replace ingestVideo's
+      // empty cursor.json + frame_start-only events.json with the
+      // real position track + heuristic click events. Coordinates
+      // come in as absolute screen pixels at the helper's reported
+      // scale; we down-rescale to the captured video's native
+      // resolution (which is what manifest.viewport stores).
+      if (parsed.cursor_samples.length > 0 && parsed.helper_screen) {
+        await writeCursorAndClicks(
+          dir,
+          parsed.cursor_samples,
+          parsed.helper_screen,
+        );
+      }
 
       job.state = "planning";
       await orchestratePlanEdit({ recording_id: job.id, rootDir });
@@ -153,7 +173,6 @@ export async function startWebRecorderServer(
       job.size_bytes = out.size_bytes;
       job.state = "done";
 
-      // Auto-open on macOS for convenience.
       if (process.platform === "darwin") {
         spawn("open", [out.output_path], { detached: true, stdio: "ignore" }).unref();
       }
@@ -194,25 +213,140 @@ function sendHtml(res: ServerResponse, body: string) {
   res.end(body);
 }
 
+interface ParsedUpload {
+  cursor_samples: Array<{ t_ms: number; x: number; y: number }>;
+  helper_screen: { screen_w: number; screen_h: number; scale: number } | null;
+}
+
 /**
- * Stream the multipart/form-data POST body to disk, picking only the
- * `video` part. The only client is our own browser page, so we know
- * the part order — a full parser (busboy/formidable) would be 500
- * lines of dependency for one file upload.
+ * Write the helper-derived cursor track to cursor.json and detect
+ * heuristic click events from cursor motion (settle → tiny jitter →
+ * resume), writing them to events.json. Coordinates are translated
+ * from helper screen-pixels into the captured video's viewport coords
+ * by reading manifest.json (written by ingestVideo just before this).
+ *
+ * Click heuristic — cheap and good-enough for v1:
+ *   - "settled" = cursor stays within 2px for >= 120ms
+ *   - end of a settled window where the cursor then moves > 8px is a
+ *     candidate click
+ *   - dedupe to one event per ~500ms cluster
+ */
+async function writeCursorAndClicks(
+  recording_dir: string,
+  raw_samples: Array<{ t_ms: number; x: number; y: number }>,
+  helper_screen: { screen_w: number; screen_h: number; scale: number },
+): Promise<void> {
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(recording_dir, "manifest.json"), "utf8"),
+  );
+  const vp_w: number = manifest.viewport.width;
+  const vp_h: number = manifest.viewport.height;
+  // The helper reports in screen pixels at the helper's scale. The
+  // captured video frames are at vp_w × vp_h pixels (whatever
+  // getDisplayMedia returned). Linear scale.
+  const sx = vp_w / Math.max(1, helper_screen.screen_w);
+  const sy = vp_h / Math.max(1, helper_screen.screen_h);
+
+  const cursor_json = raw_samples.map((s) => ({
+    t_ms: s.t_ms,
+    x: Math.round(s.x * sx),
+    y: Math.round(s.y * sy),
+  }));
+  await fs.writeFile(
+    path.join(recording_dir, "cursor.json"),
+    JSON.stringify(cursor_json),
+  );
+
+  const clicks = detectClicks(cursor_json);
+  // Replace events.json (ingestVideo wrote a frame_start-only stub).
+  await fs.writeFile(
+    path.join(recording_dir, "events.json"),
+    JSON.stringify(
+      [
+        { kind: "frame_start", t_ms: 0 },
+        ...clicks.map((c, i) => ({
+          kind: "click" as const,
+          t_ms: c.t_ms,
+          x: c.x,
+          y: c.y,
+          step_index: i,
+          synthetic: true,
+        })),
+      ],
+      null,
+      2,
+    ),
+  );
+}
+
+/**
+ * Detect probable click moments from a cursor track. Returns one event
+ * per detected click. Tunable thresholds; calibrated against real
+ * recordings in v1.5 if needed.
+ */
+function detectClicks(
+  samples: Array<{ t_ms: number; x: number; y: number }>,
+): Array<{ t_ms: number; x: number; y: number }> {
+  if (samples.length < 4) return [];
+  const SETTLE_RADIUS_PX = 2;
+  const SETTLE_MIN_MS = 120;
+  const RESUME_DELTA_PX = 8;
+  const DEDUPE_MS = 500;
+
+  const out: Array<{ t_ms: number; x: number; y: number }> = [];
+  let settledStart = 0;
+  let settledX = samples[0]!.x;
+  let settledY = samples[0]!.y;
+  let settled = true;
+
+  for (let i = 1; i < samples.length; i++) {
+    const s = samples[i]!;
+    const d = Math.hypot(s.x - settledX, s.y - settledY);
+    if (settled) {
+      if (d <= SETTLE_RADIUS_PX) continue;
+      // We left the settled window. Was it long enough to count as a
+      // click candidate?
+      const dwellMs = s.t_ms - samples[settledStart]!.t_ms;
+      if (dwellMs >= SETTLE_MIN_MS && d >= RESUME_DELTA_PX) {
+        const last = out[out.length - 1];
+        if (!last || s.t_ms - last.t_ms >= DEDUPE_MS) {
+          out.push({ t_ms: samples[settledStart]!.t_ms + Math.round(dwellMs / 2), x: settledX, y: settledY });
+        }
+      }
+      settled = false;
+      continue;
+    }
+    // Not settled — start a new candidate dwell window.
+    settledStart = i;
+    settledX = s.x;
+    settledY = s.y;
+    settled = true;
+  }
+  return out;
+}
+
+/**
+ * Stream a multipart/form-data POST: pipe the `video` part to disk,
+ * collect any text-valued parts (`cursor_samples`, `helper_screen`)
+ * into memory.
  *
  * State machine:
- *   - HEADER: accumulate until we see boundary + part headers + \r\n\r\n.
- *     Bounded by the size of part-headers (~200 bytes).
- *   - CONTENT (only if `name="video"`): every incoming chunk gets
- *     written to disk MINUS the trailing `boundary.length + 4` bytes
- *     held in a small carry-over buffer. This avoids the O(N²)
- *     Buffer.concat that would happen if we accumulated the whole
- *     upload, and guarantees forward progress even on tiny chunks.
+ *   - HEADER: accumulate until we see a part's `\r\n\r\n`. Bounded by
+ *     the size of part-headers (~200 bytes).
+ *   - CONTENT-VIDEO: stream chunks to disk minus a `boundary.length+4`
+ *     carry buffer to detect a boundary that straddles chunks. No
+ *     unbounded Buffer.concat.
+ *   - CONTENT-TEXT: accumulate the whole part in memory (text fields
+ *     are small) and capture on completion.
+ *
+ * The only client is our own browser page; we know the field names
+ * and part order. A full parser (busboy/formidable) would be 500 lines
+ * of dependency for what's needed.
  */
-async function pipeMultipartVideo(
+async function parseMultipart(
   req: IncomingMessage,
-  out_path: string,
-): Promise<void> {
+  video_path: string,
+): Promise<ParsedUpload> {
   const ct = req.headers["content-type"] ?? "";
   const m = ct.match(/boundary=([^;]+)/);
   if (!m) throw new Error("missing boundary");
@@ -222,74 +356,160 @@ async function pipeMultipartVideo(
   // straddles two chunks is still detectable.
   const tailReserve = boundary.length + 4;
 
-  const sink = createWriteStream(out_path);
-  let mode: "header" | "content" | "done" = "header";
-  let headerBuf = Buffer.alloc(0); // bounded — only used in HEADER
-  let carry = Buffer.alloc(0); // bounded to tailReserve — only used in CONTENT
+  type Mode = "seek_part" | "video" | "text" | "done";
+  let mode: Mode = "seek_part";
+  let buf = Buffer.alloc(0); // accumulator in seek_part + text modes
+  let carry = Buffer.alloc(0); // bounded carry in video mode
+  let videoSink: ReturnType<typeof createWriteStream> | null = null;
+  let textField: string | null = null; // current text part name
+  let textBuf = "";
+
+  const result: ParsedUpload = { cursor_samples: [], helper_screen: null };
 
   return new Promise((resolve, reject) => {
-    const finish = () => {
-      mode = "done";
-      sink.end(() => resolve());
-    };
+    req.on("data", onChunk);
+    req.on("end", onEnd);
+    req.on("error", reject);
 
-    req.on("data", (chunk: Buffer) => {
+    function onChunk(chunk: Buffer) {
       if (mode === "done") return;
-
-      if (mode === "header") {
-        headerBuf = Buffer.concat([headerBuf, chunk]);
-        const bIdx = headerBuf.indexOf(boundary);
-        if (bIdx < 0) return;
-        const headersStart = bIdx + boundary.length;
-        const headersEnd = headerBuf.indexOf(headerEnd, headersStart);
-        if (headersEnd < 0) return;
-        const headers = headerBuf.slice(headersStart, headersEnd).toString();
-        const contentStart = headersEnd + headerEnd.length;
-        if (!/name="video"/.test(headers)) {
-          // not the file part — drop and look for the next boundary
-          headerBuf = headerBuf.slice(contentStart);
-          return;
-        }
-        // Switch to CONTENT mode; everything after the headers is file bytes.
-        const initial = headerBuf.slice(contentStart);
-        headerBuf = Buffer.alloc(0);
-        mode = "content";
-        consumeContent(initial);
+      if (mode === "video") {
+        consumeVideo(chunk);
         return;
       }
+      // seek_part or text — accumulate then drive the part loop
+      buf = Buffer.concat([buf, chunk]);
+      tickParts();
+    }
 
-      consumeContent(chunk);
-    });
+    function tickParts() {
+      // Drain as many parts as possible from `buf`. Returns when we
+      // need more data.
+      while (true) {
+        if (mode === "seek_part") {
+          const bIdx = buf.indexOf(boundary);
+          if (bIdx < 0) return; // need more data
+          const headersStart = bIdx + boundary.length;
+          const headersEnd = buf.indexOf(headerEnd, headersStart);
+          if (headersEnd < 0) return;
+          const headers = buf.slice(headersStart, headersEnd).toString();
+          const contentStart = headersEnd + headerEnd.length;
+          const nameMatch = headers.match(/name="([^"]+)"/);
+          const name = nameMatch?.[1] ?? "";
 
-    req.on("end", () => {
-      if (mode !== "done") {
-        // No closing boundary seen — flush whatever we have.
-        if (carry.length > 0) sink.write(carry);
-        finish();
+          if (name === "video") {
+            mode = "video";
+            videoSink = createWriteStream(video_path);
+            videoSink.on("error", reject);
+            const remainder = buf.slice(contentStart);
+            buf = Buffer.alloc(0);
+            consumeVideo(remainder);
+            return;
+          }
+          if (name === "cursor_samples" || name === "helper_screen") {
+            mode = "text";
+            textField = name;
+            textBuf = "";
+            buf = buf.slice(contentStart);
+            continue;
+          }
+          // unknown part — skip past its headers and keep scanning
+          buf = buf.slice(contentStart);
+          continue;
+        }
+        if (mode === "text") {
+          // Accumulate text content until the next boundary marker.
+          // Text parts are small — no chunk-streaming optimization.
+          const bIdx = buf.indexOf(boundary);
+          if (bIdx < 0) {
+            // Hold back enough bytes that a boundary spanning a future
+            // chunk is still detectable on the next pass.
+            const safeUpTo = Math.max(0, buf.length - tailReserve);
+            textBuf += buf.slice(0, safeUpTo).toString();
+            buf = buf.slice(safeUpTo);
+            return;
+          }
+          // Trailing \r\n before boundary is framing.
+          textBuf += buf.slice(0, Math.max(0, bIdx - 2)).toString();
+          captureTextField();
+          buf = buf.slice(bIdx);
+          mode = "seek_part";
+          continue;
+        }
+        return;
       }
-    });
-    req.on("error", reject);
-    sink.on("error", reject);
+    }
 
-    function consumeContent(chunk: Buffer) {
-      // Treat the (small) leftover from the previous chunk + this chunk
-      // as one window. Search for the boundary anywhere in the window;
-      // if found, write everything before the trailing CRLF and finish.
-      // Otherwise write `window - tailReserve` bytes and keep the rest.
+    function consumeVideo(chunk: Buffer) {
+      // Buffer-safe stream-to-disk with a small carry tail to catch
+      // boundaries that straddle chunks. After the next boundary we
+      // flip back to seek_part for further parts (text fields after
+      // the video).
       const window = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
       const bIdx = window.indexOf(boundary);
       if (bIdx >= 0) {
-        // Trailing \r\n before the boundary belongs to multipart framing
-        // (not file content). bIdx is at least 2 in a well-formed body;
-        // Math.max guards a degenerate empty file.
-        sink.write(window.slice(0, Math.max(0, bIdx - 2)));
+        videoSink?.write(window.slice(0, Math.max(0, bIdx - 2)));
+        videoSink?.end();
+        videoSink = null;
         carry = Buffer.alloc(0);
-        finish();
+        // Anything after `bIdx` belongs to the next part.
+        buf = window.slice(bIdx);
+        mode = "seek_part";
+        tickParts();
         return;
       }
       const flushTo = Math.max(0, window.length - tailReserve);
-      if (flushTo > 0) sink.write(window.slice(0, flushTo));
+      if (flushTo > 0) videoSink?.write(window.slice(0, flushTo));
       carry = window.slice(flushTo);
+    }
+
+    function captureTextField() {
+      if (textField === "cursor_samples") {
+        try {
+          const arr = JSON.parse(textBuf);
+          if (Array.isArray(arr)) {
+            result.cursor_samples = arr.filter(
+              (s) =>
+                s &&
+                typeof s.t_ms === "number" &&
+                typeof s.x === "number" &&
+                typeof s.y === "number",
+            );
+          }
+        } catch {
+          // tolerate a bad cursor payload — ingest still produces a
+          // working mp4 without it
+        }
+      } else if (textField === "helper_screen") {
+        try {
+          const obj = JSON.parse(textBuf);
+          if (
+            obj &&
+            typeof obj.screen_w === "number" &&
+            typeof obj.screen_h === "number"
+          ) {
+            result.helper_screen = {
+              screen_w: obj.screen_w,
+              screen_h: obj.screen_h,
+              scale: typeof obj.scale === "number" ? obj.scale : 1,
+            };
+          }
+        } catch {
+          // same — tolerate
+        }
+      }
+      textField = null;
+      textBuf = "";
+    }
+
+    function onEnd() {
+      // Final flush. Any in-flight video carry belongs to the file.
+      if (mode === "video" && videoSink) {
+        if (carry.length > 0) videoSink.write(carry);
+        videoSink.end();
+      }
+      mode = "done";
+      resolve(result);
     }
   });
 }
