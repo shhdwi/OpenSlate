@@ -107,6 +107,26 @@ npx openslate init             # drops polish.config.ts, registers MCP project-l
 
 Writes `.mcp.json` (Claude Code), `.cursor/mcp.json` (Cursor), or `~/.codex/config.json` (Codex) so your agent picks up 8 tools — `record_plan`, `record_execute`, `record_export`, `record_list`, `record_status`, `record_polish`, `polish_preview`, `polish_preview_after`. Then in your agent: **"demo this feature"**. Make sure your dev server is running first (typically `http://localhost:3000`).
 
+## Paid templates (optional)
+
+Hand-tuned plans for common SaaS demos (onboarding flows, dashboard tours, checkout walkthroughs). Free templates are included; the catalog lives at [openslate.dev/templates](https://openslate.dev/templates).
+
+```bash
+npx openslate templates                                 # list catalog (free + paid)
+npx openslate template hello-world --base-url ...       # free, no license needed
+npx openslate login osl_xxx                             # after buying the bundle
+npx openslate template saas-onboarding --base-url ...   # paid templates work
+npx openslate logout                                    # remove saved key
+```
+
+**OSS boundary.** Three CLI commands talk to openslate.dev — `login`, `logout`, `template <slug>` — and the source for each is small and isolated:
+
+- [src/cli/login.ts](./src/cli/login.ts) — POSTs the license to `/api/license/verify`
+- [src/cli/template.ts](./src/cli/template.ts) — GETs `/api/templates/<slug>` with `Authorization: Bearer <key>`
+- [src/utils/license-config.ts](./src/utils/license-config.ts) — reads/writes `~/.config/openslate/license` (mode 0600)
+
+The rest of openSlate is fully offline. The recorder, compositor, planner, polish pipeline, `quick`, `scaffold`, `init`, MCP — none of them touch the network. Templates are JSON (`{ meta, plan, polish_overrides }`) and are executed by the same orchestration pipeline as any other plan; no arbitrary code runs from the server.
+
 ### Canonical reference example
 
 The repo also ships a longer, hand-tuned reference: a 6-step walkthrough of [nanoindex.nanonets.com/demo](https://nanoindex.nanonets.com/demo). Clone and run from source:

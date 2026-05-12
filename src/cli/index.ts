@@ -27,6 +27,9 @@ import { ensureProjectDirs, recordingDir } from "../utils/paths.js";
 import { initProject } from "./init.js";
 import { renderScaffoldTemplate } from "./scaffold-template.js";
 import { splitTypeArg } from "./step-args.js";
+import { runLogin } from "./login.js";
+import { runLogout } from "./logout.js";
+import { runTemplate, runTemplatesList } from "./template.js";
 import type { PlanStep, StepAction } from "../plan/types.js";
 
 // Default expected_duration_ms per action — used when the user passes a
@@ -100,6 +103,51 @@ program
     await fs.writeFile(target, content, "utf8");
     console.log(`✓ wrote ${path.relative(process.cwd(), target)}`);
     console.log(`\nNext: edit the steps array, then run:  node ${filename}`);
+  });
+
+// ── Paid templates (optional) ──────────────────────────────────────────
+// These three commands are the only ones in openSlate that talk to a
+// server. Source for each is intentionally small and isolated:
+//   src/cli/login.ts · logout.ts · template.ts · utils/license-config.ts
+// The rest of the package — record, plan, polish, export — is fully
+// offline.
+
+program
+  .command("login <key>")
+  .description(
+    "Save your openSlate license key so paid templates work. Key is verified once with openslate.dev and stored at ~/.config/openslate/license (mode 0600).",
+  )
+  .action(async (key: string) => {
+    await runLogin(key);
+  });
+
+program
+  .command("logout")
+  .description("Remove the saved license key. Free templates still work.")
+  .action(async () => {
+    await runLogout();
+  });
+
+program
+  .command("templates")
+  .description("List available templates (free + paid).")
+  .action(async () => {
+    await runTemplatesList();
+  });
+
+program
+  .command("template <slug>")
+  .description(
+    "Run a published template against your dev server. Free templates work without a license; paid templates require `openslate login` first.",
+  )
+  .requiredOption("--base-url <url>", "URL to record against (gets substituted into the template's plan)")
+  .option("--no-open", "don't auto-open the result in your default video player")
+  .action(async (slug: string, opts: { baseUrl: string; open?: boolean }) => {
+    await runTemplate({
+      slug,
+      base_url: opts.baseUrl,
+      no_open: opts.open === false,
+    });
   });
 
 program
