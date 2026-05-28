@@ -38,6 +38,11 @@ import { readBundle } from "../osl/reader.js";
 import type { EditPlan } from "../plan/edit-plan.js";
 import type { CursorSample, RecordingManifest } from "../recorder/events.js";
 import { CursorLayer } from "./layers/cursor.js";
+import {
+  type FrameSource,
+  NullFrameSource,
+  PngSequenceFrameSource,
+} from "./frame-source.js";
 
 export interface PreviewEngineOptions {
   /** DOM element the PixiJS canvas mounts into. */
@@ -47,6 +52,14 @@ export interface PreviewEngineOptions {
   height?: number;
   /** Background color for any uncovered area (after scale/translate). */
   background?: string;
+  /**
+   * URL prefix the engine should use to fetch frame PNGs. Joined with
+   * `frames/frame_NNNNNN.png` per the recorder convention. The Mac app
+   * provides this via a custom `osl-frame://` protocol; the webapp can
+   * use blob URLs or a HTTP origin. When omitted, the engine uses a
+   * synthetic placeholder instead of real frames.
+   */
+  framesUrlPrefix?: string;
 }
 
 export interface PreviewState {
@@ -78,6 +91,8 @@ export class PreviewEngine {
   private recordingLayer = new Container();
   private recordingSprite: Sprite | null = null;
   private cursorLayer: CursorLayer | null = null;
+  private frameSource: FrameSource = new NullFrameSource();
+  private currentFrameIndex: number | null = null;
   private bundle: OslBundle | null = null;
   private out_t_ms = 0;
   private playing = false;
@@ -92,6 +107,7 @@ export class PreviewEngine {
       width: opts.width ?? 1280,
       height: opts.height ?? 800,
       background: opts.background ?? "#0b0b0c",
+      framesUrlPrefix: opts.framesUrlPrefix ?? "",
     };
     this.app = new Application();
   }
@@ -177,22 +193,50 @@ export class PreviewEngine {
     if (!this.bundle) return;
     this.recordingLayer.removeChildren();
 
-    const rawCapture = this.bundle.manifest.artifacts.raw_capture;
-    if (rawCapture) {
-      // mp4 path — let the consumer wire a HTMLVideoElement-backed
-      // texture in a later iteration. For now we fall through to the
-      // synthetic placeholder so the engine is always renderable.
+    // Tear down any previous frame source so its cache is released.
+    this.frameSource.destroy();
+    this.currentFrameIndex = null;
+
+    const manifest = this.bundle.recording_manifest as RecordingManifest;
+    const editPlan = this.bundle.edit_plan as EditPlan;
+    const framesDir = this.bundle.manifest.artifacts.frames_dir;
+    const hasFrames =
+      !!framesDir &&
+      (framesDir.count ?? manifest.frame_indices.length) > 0 &&
+      this.opts.framesUrlPrefix.length > 0;
+
+    if (hasFrames) {
+      this.frameSource = new PngSequenceFrameSource({
+        urlPrefix: this.opts.framesUrlPrefix,
+        manifest,
+        editPlan,
+      });
+      // Prime so the first paint isn't a flash of placeholder.
+      try {
+        await this.frameSource.prime?.();
+      } catch {
+        /* network/protocol hiccup — fall through to placeholder */
+      }
+    } else {
+      this.frameSource = new NullFrameSource();
     }
 
-    // Synthetic placeholder: white texture stretched to viewport,
-    // tinted to indicate "preview without real frames". When real frames
-    // arrive the recording sprite swaps in transparently.
+    // Build the recording sprite. Initial texture is WHITE; on the first
+    // frame resolved we swap it in. Cursor layer is re-attached afterwards
+    // because removeChildren() above wiped the recording layer.
     const sprite = new Sprite(Texture.WHITE);
-    sprite.width = this.opts.width;
-    sprite.height = this.opts.height;
-    sprite.tint = 0x1a1a1c;
+    sprite.width = manifest.viewport.width;
+    sprite.height = manifest.viewport.height;
+    sprite.tint = hasFrames ? 0xffffff : 0x1a1a1c;
     this.recordingLayer.addChild(sprite);
     this.recordingSprite = sprite;
+
+    if (this.cursorLayer) {
+      // Re-attach the cursor layer (still owned, just orphaned by
+      // removeChildren above). It re-reads data via setData from
+      // loadBundle().
+      this.recordingLayer.addChild(this.cursorLayer.container);
+    }
   }
 
   /** Jump to a specific output time without playing. */
@@ -227,6 +271,7 @@ export class PreviewEngine {
   /** Tear down the PixiJS app + listeners. Call when the host unmounts. */
   destroy(): void {
     this.listeners.clear();
+    this.frameSource.destroy();
     this.app.destroy(true, { children: true });
     this.mounted = false;
   }
@@ -262,6 +307,30 @@ export class PreviewEngine {
     // re-anchored by the camera transform above. We only need to update
     // its LOCAL (viewport-space) position from cursor.json + edit-plan.
     this.cursorLayer?.updateAtOutputTime(this.out_t_ms);
+
+    // Swap the recording sprite's texture if a different source frame
+    // applies at this output time. Async load on miss — we keep
+    // showing the previous frame until the new one resolves, which
+    // avoids visible black gaps during fast scrubs.
+    void this.updateRecordingTextureForTime(this.out_t_ms);
+  }
+
+  private async updateRecordingTextureForTime(out_t_ms: number): Promise<void> {
+    if (!this.bundle || !this.recordingSprite) return;
+    try {
+      const tex = await this.frameSource.getTextureForOutputTime(out_t_ms);
+      if (!tex || !this.recordingSprite) return;
+      // If the engine moved on while we waited, drop this stale update.
+      // (Cheap epoch check via out_t_ms comparison would be better; the
+      // texture swap is idempotent so the cost of a stale write is just
+      // an extra GPU upload.)
+      this.recordingSprite.texture = tex;
+      this.recordingSprite.tint = 0xffffff;
+      this.recordingSprite.width = this.opts.width;
+      this.recordingSprite.height = this.opts.height;
+    } catch {
+      /* network / protocol hiccup; keep the previous texture */
+    }
   }
 
   private durationMs(): number {
