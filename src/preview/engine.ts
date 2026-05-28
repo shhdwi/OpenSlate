@@ -36,7 +36,8 @@ import { cameraTransform, outToSrc, sampleCamera, type CameraState } from "../co
 import type { OslBundle } from "../osl/types.js";
 import { readBundle } from "../osl/reader.js";
 import type { EditPlan } from "../plan/edit-plan.js";
-import type { RecordingManifest } from "../recorder/events.js";
+import type { CursorSample, RecordingManifest } from "../recorder/events.js";
+import { CursorLayer } from "./layers/cursor.js";
 
 export interface PreviewEngineOptions {
   /** DOM element the PixiJS canvas mounts into. */
@@ -76,6 +77,7 @@ export class PreviewEngine {
   private stage = new Container();
   private recordingLayer = new Container();
   private recordingSprite: Sprite | null = null;
+  private cursorLayer: CursorLayer | null = null;
   private bundle: OslBundle | null = null;
   private out_t_ms = 0;
   private playing = false;
@@ -112,6 +114,12 @@ export class PreviewEngine {
     });
     this.app.stage.addChild(this.stage);
     this.stage.addChild(this.recordingLayer);
+    // Cursor layer is a child of recordingLayer so camera scale/translate
+    // applies to it the same way it applies to the source frames. That
+    // keeps the cursor anchored to whatever pixel of the recording it
+    // was sampled from, even as zoom changes.
+    this.cursorLayer = new CursorLayer();
+    this.recordingLayer.addChild(this.cursorLayer.container);
     this.container.appendChild(this.app.canvas);
     this.app.ticker.add((ticker) => this.tick(ticker.deltaMS));
     this.mounted = true;
@@ -146,6 +154,15 @@ export class PreviewEngine {
     this.app.renderer.resize(manifest.viewport.width, manifest.viewport.height);
 
     await this.loadRecordingTexture();
+
+    // Hand the cursor layer the parsed samples + edit-plan so it can
+    // resolve positions at any output time. The actual position update
+    // happens in `applyCamera()` (per-frame), keeping all per-tick work
+    // in one place.
+    if (this.cursorLayer) {
+      this.cursorLayer.setData(bundle.cursor as CursorSample[], bundle.edit_plan as EditPlan);
+    }
+
     this.emit();
   }
 
@@ -240,6 +257,11 @@ export class PreviewEngine {
     });
     this.recordingLayer.scale.set(transform.scale);
     this.recordingLayer.position.set(transform.translate_x, transform.translate_y);
+
+    // Cursor lives inside the recording layer, so its world position is
+    // re-anchored by the camera transform above. We only need to update
+    // its LOCAL (viewport-space) position from cursor.json + edit-plan.
+    this.cursorLayer?.updateAtOutputTime(this.out_t_ms);
   }
 
   private durationMs(): number {
