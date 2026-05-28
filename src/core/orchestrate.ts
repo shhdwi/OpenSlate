@@ -7,6 +7,8 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { renderPolished, renderPolishedMany, type RenderResult } from "../compositor/render.js";
 import { loadPolishProfile } from "../config/load.js";
+import { writeBundleManifest } from "../osl/writer.js";
+import type { OslCaptureBackend, OslSource } from "../osl/types.js";
 import { buildPlan } from "../plan/generator.js";
 import { buildEditPlan, type EditPlan } from "../plan/edit-plan.js";
 import type { DemoPlan, PrincipleViolation } from "../plan/types.js";
@@ -16,6 +18,14 @@ import type { RecordedEvent, RecordingManifest } from "../recorder/events.js";
 import { ensureProjectDirs, kebab, recordingDir, timestampSlug } from "../utils/paths.js";
 import type { PolishProfile } from "./types.js";
 import { DEFAULT_POLISH_PROFILE } from "./defaults.js";
+
+// Stamped into every .osl bundle manifest as `producer.version`. Read from
+// package.json at build time by tsup's define plugin; falls back to the
+// literal "dev" when running unbundled (e.g., `bun src/cli/index.ts`).
+const PACKAGE_VERSION: string =
+  typeof process !== "undefined" && process.env.OPENSLATE_VERSION
+    ? process.env.OPENSLATE_VERSION
+    : "0.0.1";
 
 export interface PlanOrchestratorArgs {
   description: string;
@@ -167,6 +177,10 @@ export interface PlanEditOrchestratorArgs {
    * modifying the project's polish.config.ts.
    */
   profile_overrides?: Partial<PolishProfile>;
+  /** Which surface invoked this — recorded in osl-bundle.json. */
+  osl_source?: OslSource;
+  /** Which capture backend produced the frames — recorded in osl-bundle.json. */
+  osl_capture_backend?: OslCaptureBackend;
 }
 
 export interface PlanEditOrchestratorResult {
@@ -214,6 +228,30 @@ export async function orchestratePlanEdit(
     profile,
   });
   await fs.writeFile(planPath, JSON.stringify(edit_plan, null, 2));
+
+  // Stamp the .osl bundle manifest. This is the seam where the recording
+  // directory becomes a self-contained, surface-portable project bundle —
+  // every required JSON artifact is now on disk, so we can declare the
+  // bundle inventory and hash it for forensic reproducibility.
+  await writeBundleManifest({
+    bundleRoot: dir,
+    recordingId: args.recording_id,
+    source: args.osl_source ?? "cli",
+    captureBackend: args.osl_capture_backend ?? "playwright",
+    producer: { name: "openslate", version: PACKAGE_VERSION },
+    target: {
+      label: manifest.base_url,
+      viewport: manifest.viewport,
+      device_pixel_ratio: manifest.device_pixel_ratio,
+      fps: manifest.fps,
+    },
+  }).catch((err) => {
+    // Non-fatal — the legacy loose-file path still works without a bundle
+    // manifest. Surface the error so we notice if it starts failing,
+    // but never block the orchestrator.
+    console.warn(`[osl] failed to write osl-bundle.json: ${(err as Error).message}`);
+  });
+
   return { recording_id: args.recording_id, edit_plan_path: planPath, edit_plan };
 }
 
@@ -323,9 +361,27 @@ function mergePartialProfile(
   overrides?: Partial<PolishProfile>,
 ): PolishProfile {
   if (!overrides) return base;
-  // Shallow-merge top-level keys; values are themselves objects so a real
-  // deep-merge is preferred for v1.5. v1: intentional shallow.
-  return { ...base, ...overrides } as PolishProfile;
+  // Deep merge: for each top-level key, if both base and override are
+  // plain objects, spread base into override so partial nested objects
+  // (e.g. { layout: { padding_px: 0 } }) don't wipe sibling fields
+  // (e.g. layout.tilt, layout.shadow).
+  const result: Record<string, unknown> = { ...(base as unknown as Record<string, unknown>) };
+  for (const [key, val] of Object.entries(overrides)) {
+    const baseVal = (base as unknown as Record<string, unknown>)[key];
+    if (
+      val != null &&
+      typeof val === "object" &&
+      !Array.isArray(val) &&
+      baseVal != null &&
+      typeof baseVal === "object" &&
+      !Array.isArray(baseVal)
+    ) {
+      result[key] = { ...baseVal, ...val };
+    } else {
+      result[key] = val;
+    }
+  }
+  return result as unknown as PolishProfile;
 }
 
 export { DEFAULT_POLISH_PROFILE };

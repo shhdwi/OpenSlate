@@ -35,6 +35,7 @@ import type { CursorSample, RecordedEvent, RecordingManifest } from "../recorder
 import { applyEase } from "../utils/easings.js";
 import { injectArcWaypoints, resolveSpringTrajectory } from "../utils/springs.js";
 import { type EditPlan, outToSrc, srcToOut } from "../plan/edit-plan.js";
+import { sampleCamera as sampleCameraShared } from "./camera.js";
 import { Background } from "./background.js";
 import { Captions } from "./captions.js";
 import { Cursor } from "./cursor.js";
@@ -464,38 +465,11 @@ export const PolishComposition: React.FC<CompositionProps> = ({
   );
 };
 
-/**
- * Sample the camera state at output time `t_ms` by interpolating between
- * the two surrounding keyframes. Uses the destination keyframe's `ease`
- * for the curve from previous → current. Outside the keyframe range,
- * holds the boundary state.
- */
-function sampleCamera(
-  keyframes: EditPlan["keyframes"],
-  t_ms: number,
-): { zoom: number; focal_x: number; focal_y: number } {
-  if (keyframes.length === 0) return { zoom: 1, focal_x: 0.5, focal_y: 0.5 };
-  if (t_ms <= keyframes[0]!.out_t_ms) {
-    const k = keyframes[0]!;
-    return { zoom: k.zoom, focal_x: k.focal_x, focal_y: k.focal_y };
-  }
-  for (let i = 1; i < keyframes.length; i++) {
-    const a = keyframes[i - 1]!;
-    const b = keyframes[i]!;
-    if (t_ms <= b.out_t_ms) {
-      const span = Math.max(0.001, b.out_t_ms - a.out_t_ms);
-      const u = (t_ms - a.out_t_ms) / span;
-      const eased = applyEase(b.ease, Math.max(0, Math.min(1, u)));
-      return {
-        zoom: a.zoom + (b.zoom - a.zoom) * eased,
-        focal_x: a.focal_x + (b.focal_x - a.focal_x) * eased,
-        focal_y: a.focal_y + (b.focal_y - a.focal_y) * eased,
-      };
-    }
-  }
-  const last = keyframes[keyframes.length - 1]!;
-  return { zoom: last.zoom, focal_x: last.focal_x, focal_y: last.focal_y };
-}
+// `sampleCamera` lives in ./camera.ts so the PixiJS live-preview engine
+// can call the same interpolator. Both renderers consume identical math.
+// Re-exporting under the same local name keeps the call sites below
+// untouched.
+const sampleCamera = sampleCameraShared;
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
